@@ -2,9 +2,6 @@
 //   CHARACTERS + PROGRESSION + CHARACTER SELECT UI
 // ======================================================
 
-const canvas = document.getElementById("gameCanvas");
-const ctx = canvas.getContext("2d");
-
 function W() {
   return canvas.width;
 }
@@ -399,3 +396,4 @@ canvas.addEventListener("mousedown", async () => {
 export function getProfile() {
   return PlayerProfile;
 }
+
