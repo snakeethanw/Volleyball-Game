@@ -3,7 +3,7 @@
 
 import { UIOvercharge } from "./uiOvercharge.js";
 import { updatePlayerMovement, initPlayerMovement } from "./movement.js";
-import { updateBall, initBall, handlePlayerSpike } from "./ball.js";
+import { updateBall, initBall } from "./ball.js";
 import { updateOpponentAI, initOpponentAI } from "./opponentAI.js";
 
 const canvas = document.getElementById("gameCanvas");
@@ -255,3 +255,4 @@ function drawBall(ctx, canvas) {
 // ---------- Start ----------
 
 initGame();
+
