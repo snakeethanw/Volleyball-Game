@@ -1,126 +1,257 @@
 // main.js
-// Scene setup, game state, serve logic, movement, AI, and ball integration.
+// Core game loop, state, and UI wiring (including Overcharge Meter)
 
-import { loadProfile } from "./charactersAndProgression.js";
-import { createCharacterCards } from "./characterCards.js";
-import { createBall, updateBall, serveBall, hitBall } from "./ball.js";
-import { createPlayer } from "./player.js";
-import { createCourt } from "./court.js";
-import { createMovementController } from "./movement.js";
-import { createOpponentAI } from "./opponentAI.js";
+import { UIOvercharge } from "./uiOvercharge.js";
+import { updatePlayerMovement, initPlayerMovement } from "./movement.js";
+import { updateBall, initBall, handlePlayerSpike } from "./ball.js";
+import { updateOpponentAI, initOpponentAI } from "./opponentAI.js";
 
-const canvas = document.getElementById("renderCanvas");
-const engine = new BABYLON.Engine(canvas, true);
+const canvas = document.getElementById("gameCanvas");
+const ctx = canvas.getContext("2d");
 
-let scene;
-let gameState = "characterSelect";
-let serveTimer = 0;
-let serveActive = false;
+const game = {
+    canvas,
+    ctx,
+    timeScale: 1,
+    lastTime: 0,
 
-let player, opponent, ball, court, movementController;
+    // State
+    state: "menu", // "menu", "playing", "paused"
 
-async function createScene() {
-  scene = new BABYLON.Scene(engine);
-  scene.clearColor = new BABYLON.Color3(0.05, 0.05, 0.1);
+    // Player
+    player: {
+        x: 0,
+        y: 0,
+        vx: 0,
+        vy: 0,
+        isGrounded: true,
+        isApproaching: false,
+        isJumping: false,
+        isSpiking: false,
+        facing: 1,
+        isChampion: false
+    },
 
-  const camera = new BABYLON.ArcRotateCamera(
-    "camera",
-    Math.PI / 2,
-    1.1,
-    22,
-    new BABYLON.Vector3(0, 3, 0),
-    scene
-  );
-  camera.attachControl(canvas, true);
+    // Opponent
+    opponent: {
+        x: 0,
+        y: 0,
+        vx: 0,
+        vy: 0,
+        isGrounded: true,
+        difficulty: 1
+    },
 
-  new BABYLON.HemisphericLight("light", new BABYLON.Vector3(0, 1, 0), scene);
+    // Ball
+    ball: {
+        x: 0,
+        y: 0,
+        vx: 0,
+        vy: 0,
+        inPlay: false,
+        lastHitBy: null
+    },
 
-  await loadProfile();
+    // Overcharge
+    playerOvercharge: 0, // 0–1
+    opponentOvercharge: 0, // 0–1
 
-  const uiLayer = BABYLON.GUI.AdvancedDynamicTexture.CreateFullscreenUI("UI");
-  const cards = createCharacterCards(scene, uiLayer);
+    // UI
+    uiOvercharge: null
+};
 
-  court = createCourt(scene);
-  player = createPlayer(scene, "left");
-  opponent = createPlayer(scene, "right");
-  ball = createBall(scene, court);
+// ---------- Initialization ----------
 
-  court.root.setEnabled(false);
-  player.mesh.setEnabled(false);
-  opponent.mesh.setEnabled(false);
-  ball.mesh.setEnabled(false);
-
-  window.addEventListener("keydown", e => {
-    if (e.key === "Enter" && gameState === "characterSelect") {
-      startMatch(cards);
-    }
-
-    if (e.key === "j" && gameState === "playing") {
-      tryPlayerHit(false);
-    }
-  });
-
-  // Serve timer
-  scene.onBeforeRenderObservable.add(() => {
-    if (serveActive) {
-      const dt = scene.getEngine().getDeltaTime() / 1000;
-      serveTimer -= dt;
-
-      if (serveTimer <= 0) {
-        serveActive = false;
-        // Player loses serve, opponent serves
-        serveBall(ball, opponent);
-        serveTimer = 15;
-        serveActive = true;
-      }
-    }
-  });
-
-  return scene;
+function resizeCanvas() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
 }
 
-function startMatch(cards) {
-  gameState = "playing";
+function initGame() {
+    resizeCanvas();
+    window.addEventListener("resize", resizeCanvas);
 
-  cards.forEach(c => c.card.setEnabled(false));
+    initPlayerMovement(game);
+    initBall(game);
+    initOpponentAI(game);
 
-  court.root.setEnabled(true);
-  player.mesh.setEnabled(true);
-  opponent.mesh.setEnabled(true);
-  ball.mesh.setEnabled(true);
+    game.uiOvercharge = new UIOvercharge(game);
+    game.uiOvercharge.setVisible(false); // hidden in menu
 
-  movementController = createMovementController(scene, player);
-  createOpponentAI(scene, opponent, ball);
-
-  serveBall(ball, player);
-  serveTimer = 15;
-  serveActive = true;
+    setupInput();
+    game.state = "menu";
+    requestAnimationFrame(loop);
 }
 
-function tryPlayerHit(isOvercharge) {
-  if (!movementController) return;
+// ---------- Input ----------
 
-  const tilt = movementController.tilt;
-  const contactHeight = ball.mesh.position.y;
+function setupInput() {
+    window.addEventListener("keydown", (e) => {
+        if (e.code === "Space") {
+            if (game.state === "menu") {
+                startMatch();
+            } else if (game.state === "playing") {
+                // Jump / spike intent handled in movement.js / ball.js
+                game.player.isJumping = true;
+            }
+        }
 
-  // Simple hitbox: ball must be near player
-  const dx = ball.mesh.position.x - player.mesh.position.x;
-  const dz = ball.mesh.position.z - player.mesh.position.z;
-  const dist = Math.sqrt(dx * dx + dz * dz);
+        if (e.code === "KeyP") {
+            if (game.state === "playing") pauseGame();
+            else if (game.state === "paused") resumeGame();
+        }
+    });
 
-  if (dist < 2.0 && contactHeight > 1.5) {
-    hitBall(ball, player, tilt, isOvercharge, contactHeight);
-    serveActive = false;
-  }
+    window.addEventListener("keyup", (e) => {
+        if (e.code === "Space") {
+            game.player.isJumping = false;
+        }
+    });
 }
 
-createScene().then(scene => {
-  engine.runRenderLoop(() => {
-    if (gameState === "playing") {
-      updateBall(scene, ball, player, opponent, court);
+function startMatch() {
+    game.state = "playing";
+    game.playerOvercharge = 0;
+    game.opponentOvercharge = 0;
+    game.uiOvercharge.setVisible(true);
+    resetRally();
+}
+
+function pauseGame() {
+    game.state = "paused";
+    game.uiOvercharge.setVisible(false);
+}
+
+function resumeGame() {
+    game.state = "playing";
+    game.uiOvercharge.setVisible(true);
+}
+
+function resetRally() {
+    game.ball.inPlay = true;
+    game.ball.x = game.canvas.width / 2;
+    game.ball.y = game.canvas.height / 3;
+    game.ball.vx = 0;
+    game.ball.vy = 0;
+    game.player.isSpiking = false;
+    game.player.isApproaching = false;
+}
+
+// ---------- Main Loop ----------
+
+function loop(timestamp) {
+    const dt = (timestamp - game.lastTime) / 1000;
+    game.lastTime = timestamp;
+
+    update(dt * game.timeScale);
+    draw();
+
+    requestAnimationFrame(loop);
+}
+
+function update(dt) {
+    if (game.state === "menu") {
+        // Menu idle animations could go here
+        if (game.uiOvercharge) {
+            game.uiOvercharge.setCharge(0);
+            game.uiOvercharge.setVisible(false);
+            game.uiOvercharge.update(dt);
+        }
+        return;
     }
-    scene.render();
-  });
-});
 
-window.addEventListener("resize", () => engine.resize());
+    if (game.state === "paused") {
+        if (game.uiOvercharge) {
+            game.uiOvercharge.setVisible(false);
+            game.uiOvercharge.update(dt);
+        }
+        return;
+    }
+
+    // --- Playing state ---
+
+    // Movement & overcharge
+    updatePlayerMovement(game, dt);
+
+    // Opponent AI & its overcharge
+    updateOpponentAI(game, dt);
+
+    // Ball physics & spike handling
+    updateBall(game, dt);
+
+    // Overcharge UI
+    if (game.uiOvercharge) {
+        game.uiOvercharge.setVisible(true);
+        game.uiOvercharge.setCharge(game.playerOvercharge);
+        game.uiOvercharge.update(dt);
+    }
+}
+
+// ---------- Drawing ----------
+
+function draw() {
+    const { ctx, canvas } = game;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    if (game.state === "menu") {
+        drawMenu(ctx, canvas);
+    } else {
+        drawCourt(ctx, canvas);
+        drawPlayers(ctx, canvas);
+        drawBall(ctx, canvas);
+    }
+
+    if (game.uiOvercharge) {
+        game.uiOvercharge.draw(ctx, canvas);
+    }
+}
+
+function drawMenu(ctx, canvas) {
+    ctx.fillStyle = "#111";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    ctx.fillStyle = "#fff";
+    ctx.font = "32px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("Volleyball Overcharge", canvas.width / 2, canvas.height / 2 - 40);
+    ctx.font = "20px sans-serif";
+    ctx.fillText("Press SPACE to start", canvas.width / 2, canvas.height / 2 + 10);
+}
+
+function drawCourt(ctx, canvas) {
+    ctx.fillStyle = "#20232a";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    ctx.fillStyle = "#2c3e50";
+    ctx.fillRect(0, canvas.height * 0.6, canvas.width, canvas.height * 0.4);
+
+    ctx.strokeStyle = "#ecf0f1";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(0, canvas.height * 0.6);
+    ctx.lineTo(canvas.width, canvas.height * 0.6);
+    ctx.stroke();
+}
+
+function drawPlayers(ctx, canvas) {
+    // Player
+    ctx.fillStyle = "#3498db";
+    ctx.fillRect(game.player.x - 15, game.player.y - 40, 30, 40);
+
+    // Opponent
+    ctx.fillStyle = "#e74c3c";
+    ctx.fillRect(game.opponent.x - 15, game.opponent.y - 40, 30, 40);
+}
+
+function drawBall(ctx, canvas) {
+    if (!game.ball.inPlay) return;
+
+    ctx.fillStyle = "#f1c40f";
+    ctx.beginPath();
+    ctx.arc(game.ball.x, game.ball.y, 10, 0, Math.PI * 2);
+    ctx.fill();
+}
+
+// ---------- Start ----------
+
+initGame();
