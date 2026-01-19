@@ -1,21 +1,19 @@
 // ======================================================
-//   PLAYER MOVEMENT + INPUT SYSTEM
+//   PLAYER MOVEMENT + INPUT + ACTIONS
 // ======================================================
 //
-// This module handles:
-// - WASD / Arrow key movement
+// Handles:
+// - WASD / Arrow movement
 // - Stat-based speed
 // - Jumping
 // - Spike input
 // - Block input
 // - Smooth acceleration
-//
-// It does NOT create meshes or handle physics directly.
-// It only updates the player object passed into it.
+// - Animation hooks
 //
 // ======================================================
 
-export function createMovementController(scene, player) {
+export function createMovementController(scene, player, ball) {
   const input = {
     left: false,
     right: false,
@@ -26,11 +24,11 @@ export function createMovementController(scene, player) {
     block: false
   };
 
-  // Movement state
   const velocity = new BABYLON.Vector3(0, 0, 0);
-  const moveSpeed = 4 * player.stats.speed;      // stat-based
-  const jumpStrength = 6 * player.stats.jump;    // stat-based
-  const spikePower = 1.2 * (player.stats.power.base || player.stats.power); // stat-based
+
+  const moveSpeed = 4 * player.stats.speed;
+  const jumpStrength = 6 * player.stats.jump;
+  const spikePower = 1.2 * (player.stats.power.base || player.stats.power);
   const blockBoost = 1.0 + player.stats.block * 0.2;
 
   let isGrounded = true;
@@ -42,60 +40,32 @@ export function createMovementController(scene, player) {
   window.addEventListener("keydown", e => {
     switch (e.key) {
       case "a":
-      case "ArrowLeft":
-        input.left = true;
-        break;
+      case "ArrowLeft": input.left = true; break;
       case "d":
-      case "ArrowRight":
-        input.right = true;
-        break;
+      case "ArrowRight": input.right = true; break;
       case "w":
-      case "ArrowUp":
-        input.forward = true;
-        break;
+      case "ArrowUp": input.forward = true; break;
       case "s":
-      case "ArrowDown":
-        input.back = true;
-        break;
-      case " ":
-        input.jump = true;
-        break;
-      case "j":
-        input.spike = true;
-        break;
-      case "k":
-        input.block = true;
-        break;
+      case "ArrowDown": input.back = true; break;
+      case " ": input.jump = true; break;
+      case "j": input.spike = true; break;
+      case "k": input.block = true; break;
     }
   });
 
   window.addEventListener("keyup", e => {
     switch (e.key) {
       case "a":
-      case "ArrowLeft":
-        input.left = false;
-        break;
+      case "ArrowLeft": input.left = false; break;
       case "d":
-      case "ArrowRight":
-        input.right = false;
-        break;
+      case "ArrowRight": input.right = false; break;
       case "w":
-      case "ArrowUp":
-        input.forward = false;
-        break;
+      case "ArrowUp": input.forward = false; break;
       case "s":
-      case "ArrowDown":
-        input.back = false;
-        break;
-      case " ":
-        input.jump = false;
-        break;
-      case "j":
-        input.spike = false;
-        break;
-      case "k":
-        input.block = false;
-        break;
+      case "ArrowDown": input.back = false; break;
+      case " ": input.jump = false; break;
+      case "j": input.spike = false; break;
+      case "k": input.block = false; break;
     }
   });
 
@@ -117,11 +87,8 @@ export function createMovementController(scene, player) {
     if (input.back) moveZ -= 1;
 
     const moveVec = new BABYLON.Vector3(moveX, 0, moveZ);
-    if (moveVec.length() > 0) {
-      moveVec.normalize().scaleInPlace(moveSpeed);
-    }
+    if (moveVec.length() > 0) moveVec.normalize().scaleInPlace(moveSpeed);
 
-    // Smooth acceleration
     velocity.x = BABYLON.Scalar.Lerp(velocity.x, moveVec.x, 0.15);
     velocity.z = BABYLON.Scalar.Lerp(velocity.z, moveVec.z, 0.15);
 
@@ -134,9 +101,10 @@ export function createMovementController(scene, player) {
       velocity.y = jumpStrength;
       isGrounded = false;
       jumpCooldown = 0.25;
+
+      if (player.onJump) player.onJump();
     }
 
-    // Gravity
     velocity.y -= 18 * dt;
 
     // ------------------------------------------
@@ -154,23 +122,19 @@ export function createMovementController(scene, player) {
     }
 
     // ------------------------------------------
-    // Spike input (placeholder hook)
+    // Spike
     // ------------------------------------------
-    if (input.spike) {
-      // You can trigger spike animations or effects here
-      // console.log("Spike pressed! Power:", spikePower);
+    if (input.spike && player.mesh.position.y > 1.5) {
+      if (player.onSpike) player.onSpike(spikePower, ball);
     }
 
     // ------------------------------------------
-    // Block input (placeholder hook)
+    // Block
     // ------------------------------------------
     if (input.block) {
-      // console.log("Blocking! Boost:", blockBoost);
+      if (player.onBlock) player.onBlock(blockBoost);
     }
   });
 
-  return {
-    input,
-    velocity
-  };
+  return { input, velocity };
 }
