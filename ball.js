@@ -1,144 +1,107 @@
 // ball.js
-// Handles ball creation, physics, tilt effects, serves, and out-of-bounds logic.
+// Ball physics, spike handling, and Overcharge spike behavior
 
-export function createBall(scene, court) {
-  const mesh = BABYLON.MeshBuilder.CreateSphere("ball", { diameter: 0.6 }, scene);
-  const mat = new BABYLON.StandardMaterial("ballMat", scene);
-  mat.diffuseColor = new BABYLON.Color3(1, 0.9, 0.6);
-  mesh.material = mat;
-
-  const ball = {
-    mesh,
-    velocity: new BABYLON.Vector3(0, 0, 0),
-    gravity: -18,
-    inPlay: false,
-    isOut: false,
-    backTiltRisk: false,
-    overchargeTooHigh: false,
-    lastPlayerHitX: 0,
-    lastHitterSide: null,
-    serveState: "idle", // idle | tossed
-    serveTossHeight: 2.9,
-    court
-  };
-
-  scene.onBeforeRenderObservable.add(() => {
-    const dt = scene.getEngine().getDeltaTime() / 1000;
-    updateBallPhysics(ball, dt);
-  });
-
-  return ball;
+export function initBall(game) {
+    const { canvas } = game;
+    game.ball.x = canvas.width / 2;
+    game.ball.y = canvas.height / 3;
+    game.ball.vx = 0;
+    game.ball.vy = 0;
+    game.ball.inPlay = false;
+    game.ball.lastHitBy = null;
 }
 
-function updateBallPhysics(ball, dt) {
-  if (!ball.inPlay && ball.serveState !== "tossed") return;
+export function updateBall(game, dt) {
+    const b = game.ball;
+    if (!b.inPlay) return;
 
-  // Apply gravity
-  ball.velocity.y += ball.gravity * dt;
+    const gravity = 1200;
 
-  // Integrate position
-  ball.mesh.position.addInPlace(ball.velocity.scale(dt));
+    b.vy += gravity * dt;
+    b.x += b.vx * dt;
+    b.y += b.vy * dt;
 
-  // Serve toss: clamp to toss height
-  if (ball.serveState === "tossed") {
-    if (ball.mesh.position.y >= ball.serveTossHeight) {
-      ball.mesh.position.y = ball.serveTossHeight;
-      ball.velocity.y = 0;
+    // Floor
+    const floorY = game.canvas.height * 0.6;
+    if (b.y > floorY - 10) {
+        b.y = floorY - 10;
+        b.vy *= -0.4;
+        b.vx *= 0.8;
+
+        // Rally end condition could go here
     }
-  }
 
-  // Ground collision (simple)
-  if (ball.mesh.position.y < 0.3) {
-    ball.mesh.position.y = 0.3;
-    ball.velocity.y *= -0.2;
-  }
-
-  // Out-of-bounds check (back line only for now)
-  const court = ball.court;
-  if (court && !ball.isOut) {
-    if (ball.mesh.position.z > court.backLineZ || ball.mesh.position.z < court.frontLineZ) {
-      ball.isOut = true;
+    // Net collision (simple)
+    const netX = game.canvas.width / 2;
+    if (Math.abs(b.x - netX) < 6 && b.y < floorY && b.y > floorY - 200) {
+        b.vx *= -0.6;
     }
-  }
+
+    // Side walls
+    if (b.x < 20) {
+        b.x = 20;
+        b.vx *= -0.6;
+    }
+    if (b.x > game.canvas.width - 20) {
+        b.x = game.canvas.width - 20;
+        b.vx *= -0.6;
+    }
+
+    // Player spike check
+    handlePlayerSpike(game);
 }
 
-export function updateBall(scene, ball, player, opponent, court) {
-  // This function is kept for compatibility; core physics is in updateBallPhysics.
-  // You can extend this to handle scoring, touches, etc.
+export function handlePlayerSpike(game) {
+    const p = game.player;
+    const b = game.ball;
+    const floorY = game.canvas.height * 0.6;
+
+    if (!b.inPlay) return;
+    if (!p.isSpiking) return;
+
+    const dx = b.x - p.x;
+    const dy = b.y - (p.y - 30);
+    const dist = Math.sqrt(dx * dx + dy * dy);
+
+    if (dist < 40 && b.y < p.y) {
+        const contactHeight = floorY - b.y;
+
+        const overchargeReady = game.playerOvercharge >= 0.98;
+        if (overchargeReady && contactHeight < 220) {
+            applyOverchargeSpike(game, p, b);
+            game.playerOvercharge = 0;
+        } else {
+            applyNormalSpike(game, p, b);
+            game.playerOvercharge = 0;
+        }
+
+        p.isSpiking = false;
+        b.lastHitBy = "player";
+    }
 }
 
-export function serveBall(ball, server) {
-  // Fixed, good toss height; timing is hitbox-only.
-  ball.inPlay = false;
-  ball.isOut = false;
-  ball.backTiltRisk = false;
-  ball.overchargeTooHigh = false;
-  ball.serveState = "tossed";
+function applyNormalSpike(game, p, b) {
+    const baseSpeed = 900;
+    const angleDown = Math.PI * 0.65; // downward
 
-  const basePos = server.mesh.position.clone();
-  basePos.y = 1.2;
-  basePos.z += server.side === "left" ? 1.5 : -1.5;
+    const dirX = p.facing;
+    const vx = dirX * baseSpeed * Math.cos(angleDown);
+    const vy = baseSpeed * Math.sin(angleDown);
 
-  ball.mesh.position.copyFrom(basePos);
-  ball.velocity.set(0, 6, 0); // toss up to serveTossHeight
+    b.vx = vx;
+    b.vy = vy;
 }
 
-// Hit the ball with tilt and overcharge logic.
-// tilt: { side: -1..1, forward: 0..1, back: 0..1 }
-// isOvercharge: boolean
-// contactHeight: number (ball.mesh.position.y at contact)
-export function hitBall(ball, hitter, tilt, isOvercharge, contactHeight) {
-  ball.inPlay = true;
-  ball.serveState = "none";
-  ball.lastPlayerHitX = hitter.mesh.position.x;
-  ball.lastHitterSide = hitter.side;
-  ball.backTiltRisk = false;
-  ball.overchargeTooHigh = false;
+function applyOverchargeSpike(game, p, b) {
+    const baseSpeed = 1250;
+    const angleDown = Math.PI * 0.8; // steeper downward
 
-  // Base forward direction (toward opponent side)
-  const forwardDir = hitter.side === "left" ? 1 : -1;
+    const dirX = p.facing;
+    const vx = dirX * baseSpeed * Math.cos(angleDown);
+    const vy = baseSpeed * Math.sin(angleDown);
 
-  // Base speed
-  let speedZ = 10;
-  let speedY = 4;
+    b.vx = vx;
+    b.vy = vy;
 
-  // Forward tilt: more downward arc
-  if (tilt.forward > 0) {
-    speedY -= 4 * tilt.forward;
-    speedZ += 1.5 * tilt.forward;
-  }
-
-  // Back tilt: higher, farther, slower downward arc
-  if (!isOvercharge && tilt.back > 0) {
-    speedY += 2.5 * tilt.back;
-    speedZ += 2.0 * tilt.back;
-    ball.backTiltRisk = contactHeight > 3.2;
-  }
-
-  // Overcharge: strong downward force, normally ignores back tilt
-  if (isOvercharge) {
-    speedY -= 10; // strong downward
-    speedZ += 1.5;
-
-    // But if contact is WAY too high, even overcharge can go long
-    if (contactHeight > 3.9) {
-      speedY += 2.0;
-      speedZ += 2.5;
-      ball.overchargeTooHigh = true;
-    }
-  }
-
-  // Side tilt: curve left/right and can "save" back-tilt risk
-  let sideCurve = 4 * tilt.side; // horizontal component
-  if (ball.backTiltRisk) {
-    const curve = Math.abs(tilt.side);
-    speedZ -= curve * 1.8; // reduce how far it travels
-    if (curve > 0.6) {
-      ball.backTiltRisk = false; // saved by side tilt
-    }
-  }
-
-  ball.velocity.x = sideCurve;
-  ball.velocity.z = forwardDir * speedZ;
-  ball.velocity.y = speedY;
+    // Optional: small screen shake or effect could be triggered here
 }
