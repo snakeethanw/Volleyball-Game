@@ -11,6 +11,8 @@ const engine = new BABYLON.Engine(canvas, true);
 
 let scene;
 let gameState = "characterSelect";
+let serveTimer = 0;
+let serveActive = false;
 
 async function createScene() {
   scene = new BABYLON.Scene(engine);
@@ -43,7 +45,6 @@ async function createScene() {
   opponent.mesh.setEnabled(false);
   ball.mesh.setEnabled(false);
 
-  // Movement + AI
   let movementController = null;
 
   window.addEventListener("keydown", e => {
@@ -61,6 +62,22 @@ async function createScene() {
       createOpponentAI(scene, opponent, ball);
 
       serveBall(ball, player);
+      serveTimer = 15;
+      serveActive = true;
+    }
+  });
+
+  // SERVE TIMER
+  scene.onBeforeRenderObservable.add(() => {
+    if (serveActive) {
+      const dt = scene.getEngine().getDeltaTime() / 1000;
+      serveTimer -= dt;
+
+      if (serveTimer <= 0) {
+        serveActive = false;
+        // Player loses serve
+        serveBall(ball, opponent);
+      }
     }
   });
 
