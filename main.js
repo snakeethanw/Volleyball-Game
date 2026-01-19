@@ -1,20 +1,21 @@
 // main.js
-// Babylon.js scene + Roblox-style camera + shift-lock (toggle) + integration with logic modules
+// Full advanced Babylon.js scene + Roblox-style camera + shift-lock + integration
+// with advanced ball.js, movement.js, opponentAI.js, and uiOvercharge.js
+// Preserves original systems: shift-lock, pointer lock, roll-shot input,
+// AI profile/memory hooks, overcharge, rally flow.
 
-import { initBall, updateBall } from "./ball.js";
-import { initOpponentAI, updateOpponentAI } from "./opponentAI.js";
-import { initMovement, updateMovement } from "./movement.js";
-import { initOverchargeUI, updateOverchargeUI } from "./uiOvercharge.js";
+import { Ball } from "./ball.js";
+import { initMovement } from "./movement.js";
+import { OpponentAI } from "./opponentAI.js";
+import { UIOvercharge } from "./uiOvercharge.js";
 
 let canvas;
 let engine;
 let scene;
 let camera;
-let light;
 
 let playerMesh;
 let opponentMesh;
-let ballMesh;
 
 let shiftLockEnabled = false;
 let pointerLocked = false;
@@ -31,23 +32,45 @@ const inputState = {
 
 const game = {
     canvas: null,
+    engine: null,
+    scene: null,
+    camera: null,
+
+    // 3D meshes
+    playerMesh: null,
+    opponentMesh: null,
+
+    // Logical player state (facing, etc.)
     player: {
-        x: 0,
-        y: 0,
-        vx: 0,
-        vy: 0,
-        isGrounded: true,
         facing: 1
     },
-    opponent: null,
-    ball: null,
+
+    // AI + memory (ported from old engine)
     aiProfile: null,
     aiMemory: null,
+    aiReactionTimer: 0,
+
+    // Core systems
+    ball: null,
+    opponentAI: null,
+    uiOvercharge: null,
+    movement: null,
+
+    // Overcharge
     playerOvercharge: 0,
     opponentOvercharge: 0,
+
+    // Match state
+    score: { player: 0, opponent: 0 },
+    state: "servePause", // "servePause" | "rally" | "point" | "replay"
+
+    // Input flags for logic modules
     input: {
         rollShot: false
-    }
+    },
+
+    // Hooks
+    onPointWon: () => {}
 };
 
 window.addEventListener("DOMContentLoaded", () => {
@@ -56,13 +79,15 @@ window.addEventListener("DOMContentLoaded", () => {
 
     engine = new BABYLON.Engine(canvas, true);
     scene = new BABYLON.Scene(engine);
+    game.engine = engine;
+    game.scene = scene;
 
     setupCamera();
     setupLighting();
     setupCourt();
     setupCharacters();
-    setupBall();
     setupInput();
+
     initLogic();
 
     engine.runRenderLoop(() => {
@@ -79,38 +104,39 @@ window.addEventListener("DOMContentLoaded", () => {
 // ---------------- Camera & Scene ----------------
 
 function setupCamera() {
-    // Roblox-like third-person camera using ArcRotateCamera
-    const alpha = Math.PI * 1.5; // behind player
-    const beta = Math.PI / 3;    // slightly above
-    const radius = 12;           // D1 default distance
+    const alpha = Math.PI * 1.5;
+    const beta = Math.PI / 3;
+    const radius = 18;
 
     camera = new BABYLON.ArcRotateCamera(
         "camera",
         alpha,
         beta,
         radius,
-        new BABYLON.Vector3(0, 2, 0),
+        new BABYLON.Vector3(0, 2, -4),
         scene
     );
 
-    camera.lowerRadiusLimit = 6;
-    camera.upperRadiusLimit = 24;
+    camera.lowerRadiusLimit = 10;
+    camera.upperRadiusLimit = 26;
     camera.wheelPrecision = 30;
 
-    camera.checkCollisions = true;
-    camera.collisionRadius = new BABYLON.Vector3(0.5, 0.5, 0.5);
+    camera.checkCollisions = false;
     camera.attachControl(canvas, true);
 
+    scene.clearColor = new BABYLON.Color3(0.02, 0.02, 0.04);
     scene.collisionsEnabled = true;
+
+    game.camera = camera;
 }
 
 function setupLighting() {
-    light = new BABYLON.HemisphericLight(
+    const hemi = new BABYLON.HemisphericLight(
         "hemiLight",
         new BABYLON.Vector3(0, 1, 0),
         scene
     );
-    light.intensity = 0.9;
+    hemi.intensity = 0.9;
 
     const dirLight = new BABYLON.DirectionalLight(
         "dirLight",
@@ -124,7 +150,7 @@ function setupLighting() {
 function setupCourt() {
     const ground = BABYLON.MeshBuilder.CreateGround(
         "court",
-        { width: 30, height: 18 },
+        { width: 16, height: 24 },
         scene
     );
     ground.position.y = 0;
@@ -137,7 +163,7 @@ function setupCourt() {
 
     const net = BABYLON.MeshBuilder.CreateBox(
         "net",
-        { width: 0.2, height: 2.4, depth: 18 },
+        { width: 0.2, height: 2.4, depth: 16 },
         scene
     );
     net.position = new BABYLON.Vector3(0, 1.2, 0);
@@ -146,6 +172,9 @@ function setupCourt() {
     const netMat = new BABYLON.StandardMaterial("netMat", scene);
     netMat.diffuseColor = new BABYLON.Color3(0.9, 0.9, 0.9);
     net.material = netMat;
+
+    game.court = ground;
+    game.net = net;
 }
 
 function setupCharacters() {
@@ -155,8 +184,12 @@ function setupCharacters() {
         { height: 2, radius: 0.5 },
         scene
     );
-    playerMesh.position = new BABYLON.Vector3(-6, 1, 0);
+    playerMesh.position = new BABYLON.Vector3(0, 1, -7);
     playerMesh.checkCollisions = true;
+
+    const playerMat = new BABYLON.StandardMaterial("playerMat", scene);
+    playerMat.diffuseColor = new BABYLON.Color3(0.3, 0.8, 1.0);
+    playerMesh.material = playerMat;
 
     // Opponent
     opponentMesh = BABYLON.MeshBuilder.CreateCapsule(
@@ -164,24 +197,15 @@ function setupCharacters() {
         { height: 2, radius: 0.5 },
         scene
     );
-    opponentMesh.position = new BABYLON.Vector3(6, 1, 0);
+    opponentMesh.position = new BABYLON.Vector3(0, 1, 7);
     opponentMesh.checkCollisions = true;
 
-    game.player.x = playerMesh.position.x;
-    game.player.y = playerMesh.position.y;
-}
+    const opponentMat = new BABYLON.StandardMaterial("opponentMat", scene);
+    opponentMat.diffuseColor = new BABYLON.Color3(1.0, 0.4, 0.4);
+    opponentMesh.material = opponentMat;
 
-function setupBall() {
-    ballMesh = BABYLON.MeshBuilder.CreateSphere(
-        "ball",
-        { diameter: 1 },
-        scene
-    );
-    ballMesh.position = new BABYLON.Vector3(0, 4, 0);
-
-    const ballMat = new BABYLON.StandardMaterial("ballMat", scene);
-    ballMat.diffuseColor = new BABYLON.Color3(1, 0.9, 0.6);
-    ballMesh.material = ballMat;
+    game.playerMesh = playerMesh;
+    game.opponentMesh = opponentMesh;
 }
 
 // ---------------- Input & Shift-Lock ----------------
@@ -266,7 +290,6 @@ function setupInput() {
     document.addEventListener("pointerlockchange", () => {
         pointerLocked = document.pointerLockElement === canvas;
         if (!pointerLocked && shiftLockEnabled) {
-            // If pointer lock was lost (ESC), disable shift-lock too
             shiftLockEnabled = false;
         }
     });
@@ -276,11 +299,9 @@ function toggleShiftLock() {
     shiftLockEnabled = !shiftLockEnabled;
 
     if (shiftLockEnabled) {
-        // Request pointer lock but keep cursor visible via CSS
         if (canvas.requestPointerLock) {
             canvas.requestPointerLock({ unadjustedMovement: true });
         }
-
         snapPlayerToCamera();
     } else {
         if (document.exitPointerLock) {
@@ -299,10 +320,101 @@ function snapPlayerToCamera() {
 // ---------------- Logic Init ----------------
 
 function initLogic() {
-    initBall(game);
-    initOpponentAI(game);
-    initMovement(game);
-    initOverchargeUI(game);
+    // AI profile + memory (ported from old engine)
+    game.aiProfile = {
+        aggression: 0.65,
+        patience: 0.55,
+        risk: 0.55,
+        confidence: 0.6,
+        tilt: 0.4,
+        reactionTime: 0.16,
+        tiltLevel: 0,
+        confidenceLevel: 0.5,
+        fatigue: 0,
+        mood: getTimeOfDayMood()
+    };
+
+    game.aiMemory = {
+        spikeLeftCount: 0,
+        spikeRightCount: 0,
+        rollUsage: 0,
+        tipUsage: 0,
+        serveDeepCount: 0,
+        serveShortCount: 0
+    };
+
+    game.aiReactionTimer = 0;
+
+    // Opponent AI (3D, but using attribute matrix)
+    const opponentAI = new OpponentAI(game);
+    game.opponentAI = opponentAI;
+    game.opponentMesh = opponentAI.mesh;
+
+    // Ball (advanced engine, 3D)
+    const ball = new Ball(game);
+    game.ball = ball;
+
+    // Overcharge UI
+    const uiOvercharge = new UIOvercharge(game);
+    game.uiOvercharge = uiOvercharge;
+
+    // Movement (3D, but preserving approach speed + timing hooks)
+    const movement = initMovement(game);
+    game.movement = movement;
+
+    // Score + state text
+    const scoreText = new BABYLON.GUI.TextBlock("scoreText", "0 - 0");
+    scoreText.color = "white";
+    scoreText.fontSize = 32;
+    scoreText.top = "-45%";
+    scoreText.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_CENTER;
+    scoreText.verticalAlignment = BABYLON.GUI.Control.VERTICAL_ALIGNMENT_CENTER;
+    uiOvercharge.ui.addControl(scoreText);
+
+    const stateText = new BABYLON.GUI.TextBlock("stateText", "SERVE");
+    stateText.color = "#ccccff";
+    stateText.fontSize = 22;
+    stateText.top = "-40%";
+    stateText.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_CENTER;
+    stateText.verticalAlignment = BABYLON.GUI.Control.VERTICAL_ALIGNMENT_CENTER;
+    uiOvercharge.ui.addControl(stateText);
+
+    // Point resolution hook
+    game.onPointWon = function (winner) {
+        game.state = "point";
+
+        if (winner === "player") {
+            game.score.player += 1;
+            opponentAI.onPointResult(false);
+        } else {
+            game.score.opponent += 1;
+            opponentAI.onPointResult(true);
+        }
+
+        scoreText.text = `${game.score.player} - ${game.score.opponent}`;
+        stateText.text = winner === "player" ? "YOU SCORED" : "OPPONENT SCORED";
+
+        game.playerOvercharge = Math.max(0, game.playerOvercharge - 0.25);
+        game.opponentOvercharge = Math.max(0, game.opponentOvercharge - 0.25);
+        uiOvercharge.resetFlash();
+
+        setTimeout(() => {
+            const nextServeSide = winner === "player" ? "player" : "opponent";
+            stateText.text = "SERVE";
+            ball.startServe(nextServeSide, "float");
+        }, 1200);
+    };
+
+    // Initial serve
+    ball.startServe("player", "float");
+}
+
+function getTimeOfDayMood() {
+    const hour = new Date().getHours();
+    if (hour < 10) return "morning";
+    if (hour < 18) return "afternoon";
+    if (hour < 23) return "night";
+    return "lateNight";
 }
 
 // ---------------- Update Loop ----------------
@@ -310,14 +422,17 @@ function initLogic() {
 function update(dt) {
     updateCameraFollow(dt);
     updatePlayerFromInput(dt);
-    syncGameStateFromMeshes();
 
-    updateMovement(game, dt);
-    updateBall(game, dt);
-    updateOpponentAI(game, dt);
-    updateOverchargeUI(game, dt);
+    if (game.state === "rally" || game.state === "servePause") {
+        if (game.movement) game.movement.update(dt);
+        if (game.ball) game.ball.update(dt);
+        if (game.opponentAI) game.opponentAI.update(dt);
+    }
 
-    syncMeshesFromGameState();
+    if (game.uiOvercharge) {
+        game.uiOvercharge.setCharge(game.playerOvercharge);
+        game.uiOvercharge.update(dt);
+    }
 }
 
 function updateCameraFollow(dt) {
@@ -361,32 +476,10 @@ function updatePlayerFromInput(dt) {
         }
     }
 
-    // Simple ground clamp
     if (playerMesh.position.y < 1) {
         playerMesh.position.y = 1;
     }
+
+    playerMesh.position.x = BABYLON.Scalar.Clamp(playerMesh.position.x, -7.5, 7.5);
+    playerMesh.position.z = BABYLON.Scalar.Clamp(playerMesh.position.z, -11.5, -0.5);
 }
-
-function syncGameStateFromMeshes() {
-    game.player.x = playerMesh.position.x;
-    game.player.y = playerMesh.position.y;
-
-    if (game.opponent) {
-        opponentMesh.position.x = game.opponent.x;
-        opponentMesh.position.y = game.opponent.y;
-    }
-
-    if (game.ball) {
-        ballMesh.position.x = game.ball.x / 50; // scale if needed
-        ballMesh.position.y = game.ball.y / 50;
-    }
-}
-
-function syncMeshesFromGameState() {
-    // If your logic updates positions directly, sync them back here.
-    // For now, we assume playerMesh is the source of truth for player.
-}
-
-// ---------------- Utility ----------------
-
-// You can add helpers here if needed.
