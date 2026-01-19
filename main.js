@@ -1,162 +1,83 @@
-// =====================================================
-//   MAIN ENTRY — FULL 3D GAME FLOW
-//   - Loads Supabase profile
-//   - Shows animated main menu
-//   - Shows animated character select
-//   - Builds 3D match scene
-//   - Runs gameplay loop
-// =====================================================
-
-import { createMainMenu } from "./menu.js";
-import { createCharacterSelect } from "./characterSelect.js";
-import { createScoreboard } from "./scoreboard.js";
-
-import { createCourt } from "./court.js";
-import { createPlayers, updatePlayers } from "./player.js";
+import { loadProfile } from "./charactersAndProgression.js";
+import { createCharacterCards } from "./characterCards.js";
 import { createBall, updateBall, serveBall } from "./ball.js";
-import { setupCamera } from "./camera.js";
-import { setupEffects, updateEffects, triggerOverchargeImpact } from "./effects.js";
+import { createPlayer } from "./player.js";
+import { createCourt } from "./court.js";
 
-import {
-  loadProfile,
-  PlayerProfile,
-  CharacterRoster
-} from "./charactersAndProgression.js";
-
-
-// =====================================================
-//   ENGINE + CANVAS
-// =====================================================
 const canvas = document.getElementById("renderCanvas");
-const engine = new BABYLON.Engine(canvas, true, { stencil: true });
+const engine = new BABYLON.Engine(canvas, true);
 
 let scene;
-let court;
-let player, opponent;
-let ball;
-let camera;
-let effects;
-let scoreboard;
+let gameState = "menu"; // "menu" | "characterSelect" | "playing"
 
-
-// =====================================================
-//   CREATE MATCH SCENE
-// =====================================================
-function createMatchScene() {
+async function createScene() {
   scene = new BABYLON.Scene(engine);
-  scene.clearColor = new BABYLON.Color4(0.02, 0.04, 0.08, 1);
-
-  // Lighting
-  const mainLight = new BABYLON.DirectionalLight("mainLight",
-    new BABYLON.Vector3(-0.4, -1, 0.3), scene);
-  mainLight.intensity = 1.2;
-
-  const hemi = new BABYLON.HemisphericLight("hemi",
-    new BABYLON.Vector3(0, 1, 0), scene);
-  hemi.intensity = 0.5;
-
-  // Court
-  court = createCourt(scene);
+  scene.clearColor = new BABYLON.Color3(0.05, 0.05, 0.1);
 
   // Camera
-  camera = setupCamera(scene, canvas, court);
+  const camera = new BABYLON.ArcRotateCamera(
+    "camera",
+    Math.PI / 2,
+    1.1,
+    22,
+    new BABYLON.Vector3(0, 3, 0),
+    scene
+  );
+  camera.attachControl(canvas, true);
 
-  // Character selection from Supabase profile
-  const selectedId = PlayerProfile?.selected_character ?? "recruit";
-  const charData = CharacterRoster.find(c => c.id === selectedId) || CharacterRoster[0];
-  const oppChar = CharacterRoster[3] || CharacterRoster[0];
+  // Lights
+  const light = new BABYLON.HemisphericLight("light", new BABYLON.Vector3(0, 1, 0), scene);
+  light.intensity = 0.9;
 
-  // Players
-  ({ player, opponent } = createPlayers(scene, charData, oppChar, court));
+  // Load profile
+  await loadProfile();
 
-  // Ball
-  ball = createBall(scene, court);
+  // Character Select Cards
+  const uiLayer = BABYLON.GUI.AdvancedDynamicTexture.CreateFullscreenUI("UI");
+  const cards = createCharacterCards(scene, uiLayer);
 
-  // Effects
-  effects = setupEffects(scene, player, court);
+  // Court + Players + Ball (hidden until game starts)
+  const court = createCourt(scene);
+  const player = createPlayer(scene, "left");
+  const opponent = createPlayer(scene, "right");
+  const ball = createBall(scene, court);
 
-  // Scoreboard
-  scoreboard = createScoreboard(scene);
+  court.root.setEnabled(false);
+  player.mesh.setEnabled(false);
+  opponent.mesh.setEnabled(false);
+  ball.mesh.setEnabled(false);
 
-  // Input state
-  const inputState = {
-    left: false,
-    right: false,
-    jump: false,
-    block: false,
-    spike: false
-  };
-
+  // Start game when user presses Enter
   window.addEventListener("keydown", e => {
-    const k = e.key.toLowerCase();
-    if (k === "a") inputState.left = true;
-    if (k === "d") inputState.right = true;
-    if (k === " ") inputState.jump = true;
-    if (k === "q") inputState.block = true;
-    if (k === "r") inputState.spike = true;
-  });
+    if (e.key === "Enter" && gameState === "characterSelect") {
+      gameState = "playing";
 
-  window.addEventListener("keyup", e => {
-    const k = e.key.toLowerCase();
-    if (k === "a") inputState.left = false;
-    if (k === "d") inputState.right = false;
-    if (k === " ") inputState.jump = false;
-    if (k === "q") inputState.block = false;
-    if (k === "r") inputState.spike = false;
-  });
+      // Hide cards
+      cards.forEach(c => c.card.setEnabled(false));
 
-  // Serve animation at match start
-  serveBall(ball, player);
+      // Show gameplay
+      court.root.setEnabled(true);
+      player.mesh.setEnabled(true);
+      opponent.mesh.setEnabled(true);
+      ball.mesh.setEnabled(true);
 
-  // Game loop
-  scene.onBeforeRenderObservable.add(() => {
-    const dt = scene.getEngine().getDeltaTime() / 1000;
-
-    updatePlayers(scene, player, opponent, court, inputState, ball, (impactPos) => {
-      triggerOverchargeImpact(effects, impactPos);
-    });
-
-    updateBall(scene, ball, player, opponent, court);
-
-    updateEffects(effects, dt, player, ball);
+      serveBall(ball, player);
+    }
   });
 
   return scene;
 }
 
+createScene().then(scene => {
+  engine.runRenderLoop(() => {
+    if (gameState === "playing") {
+      // Update ball physics
+      // (player/opponent movement handled elsewhere)
+      updateBall(scene, scene.ball, scene.player, scene.opponent, scene.court);
+    }
 
-// =====================================================
-//   FULL GAME FLOW
-// =====================================================
-async function startGameFlow() {
-  // Load Supabase profile first
-  await loadProfile();
-
-  // Create a temporary scene for menus
-  scene = new BABYLON.Scene(engine);
-  scene.clearColor = new BABYLON.Color4(0.02, 0.04, 0.08, 1);
-
-  // 1. MAIN MENU
-  createMainMenu(scene, engine, () => {
-    // 2. CHARACTER SELECT
-    createCharacterSelect(scene, () => {
-      // 3. MATCH SCENE
-      scene.dispose();
-      scene = createMatchScene();
-    });
+    scene.render();
   });
-}
-
-
-// =====================================================
-//   START
-// =====================================================
-startGameFlow();
-
-engine.runRenderLoop(() => {
-  if (scene) scene.render();
 });
 
-window.addEventListener("resize", () => {
-  engine.resize();
-});
+window.addEventListener("resize", () => engine.resize());
