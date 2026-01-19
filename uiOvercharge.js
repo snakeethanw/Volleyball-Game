@@ -1,5 +1,11 @@
 // uiOvercharge.js
-// Babylon.js GUI Overcharge Meter — hybrid esports bar
+// Full advanced Babylon.js GUI Overcharge Meter — hybrid esports bar
+// - Always visible, bottom-center
+// - Neon frame + gradient fill
+// - Smooth lerp fill
+// - Pulse near full, flash at max
+// - Integrated with game.playerOvercharge
+// - Hooks for movement/AI-based gain/drain via game logic
 
 export class UIOvercharge {
     constructor(game) {
@@ -44,6 +50,14 @@ export class UIOvercharge {
         this.flashAnim = null;
         this.charge = 0;
         this.visible = true;
+
+        // Optional: text label
+        this.label = new BABYLON.GUI.TextBlock("overchargeLabel", "OVERCHARGE");
+        this.label.color = "#a0eaff";
+        this.label.fontSize = 16;
+        this.label.verticalAlignment = BABYLON.GUI.Control.VERTICAL_ALIGNMENT_TOP;
+        this.label.top = "-24px";
+        this.container.addControl(this.label);
     }
 
     setVisible(v) {
@@ -56,7 +70,7 @@ export class UIOvercharge {
     }
 
     update(dt) {
-        const current = parseFloat(this.fill.width);
+        const current = parseFloat(this.fill.width) || 0;
         const target = this.charge;
         const lerped = current + (target - current) * 0.2;
         this.fill.width = (lerped * 100).toFixed(1) + "%";
@@ -69,6 +83,10 @@ export class UIOvercharge {
 
         if (this.charge >= 1 && !this.flashAnim) {
             this.startFlash();
+        }
+
+        if (this.charge < 1 && this.flashAnim) {
+            this.resetFlash();
         }
     }
 
