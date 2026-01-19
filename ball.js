@@ -90,3 +90,5 @@ export function updateBall(scene, ball, player, opponent, court) {
     }
   });
 }
+
+export { createBall, updateBall, serveBall };
