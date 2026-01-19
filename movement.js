@@ -1,18 +1,3 @@
-// ======================================================
-//   PLAYER MOVEMENT + INPUT + ACTIONS
-// ======================================================
-//
-// Handles:
-// - WASD / Arrow movement
-// - Stat-based speed
-// - Jumping
-// - Spike input
-// - Block input
-// - Smooth acceleration
-// - Animation hooks
-//
-// ======================================================
-
 export function createMovementController(scene, player, ball) {
   const input = {
     left: false,
@@ -34,9 +19,7 @@ export function createMovementController(scene, player, ball) {
   let isGrounded = true;
   let jumpCooldown = 0;
 
-  // ======================================================
-  //   INPUT HANDLING
-  // ======================================================
+  // INPUT
   window.addEventListener("keydown", e => {
     switch (e.key) {
       case "a":
@@ -69,15 +52,11 @@ export function createMovementController(scene, player, ball) {
     }
   });
 
-  // ======================================================
-  //   UPDATE LOOP
-  // ======================================================
+  // UPDATE LOOP
   scene.onBeforeRenderObservable.add(() => {
     const dt = scene.getEngine().getDeltaTime() / 1000;
 
-    // ------------------------------------------
-    // Horizontal movement
-    // ------------------------------------------
+    // Movement
     let moveX = 0;
     let moveZ = 0;
 
@@ -92,9 +71,7 @@ export function createMovementController(scene, player, ball) {
     velocity.x = BABYLON.Scalar.Lerp(velocity.x, moveVec.x, 0.15);
     velocity.z = BABYLON.Scalar.Lerp(velocity.z, moveVec.z, 0.15);
 
-    // ------------------------------------------
-    // Jumping
-    // ------------------------------------------
+    // Jump
     if (jumpCooldown > 0) jumpCooldown -= dt;
 
     if (input.jump && isGrounded && jumpCooldown <= 0) {
@@ -107,30 +84,22 @@ export function createMovementController(scene, player, ball) {
 
     velocity.y -= 18 * dt;
 
-    // ------------------------------------------
     // Apply movement
-    // ------------------------------------------
     player.mesh.position.addInPlace(velocity.scale(dt));
 
-    // ------------------------------------------
-    // Ground collision
-    // ------------------------------------------
+    // Ground
     if (player.mesh.position.y <= 1) {
       player.mesh.position.y = 1;
       velocity.y = 0;
       isGrounded = true;
     }
 
-    // ------------------------------------------
     // Spike
-    // ------------------------------------------
     if (input.spike && player.mesh.position.y > 1.5) {
       if (player.onSpike) player.onSpike(spikePower, ball);
     }
 
-    // ------------------------------------------
     // Block
-    // ------------------------------------------
     if (input.block) {
       if (player.onBlock) player.onBlock(blockBoost);
     }
