@@ -11,8 +11,12 @@ export class UIOvercharge {
     constructor(game) {
         this.game = game;
 
-        this.ui = BABYLON.GUI.AdvancedDynamicTexture.CreateFullscreenUI("UIOvercharge");
-
+        this.ui = BABYLON.GUI.AdvancedDynamicTexture.CreateFullscreenUI(
+            "UIOvercharge",
+            true,
+            this.game.scene
+        );
+        
         this.container = new BABYLON.GUI.Rectangle("overchargeContainer");
         this.container.width = "40%";
         this.container.height = "40px";
