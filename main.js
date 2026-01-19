@@ -92,6 +92,12 @@ window.addEventListener("DOMContentLoaded", () => {
 
     engine.runRenderLoop(() => {
         const dt = engine.getDeltaTime() / 1000;
+        // Initialize UI AFTER first frame
+        if (!uiInitialized) {
+            game.uiOvercharge = new UIOvercharge(game);
+            uiInitialized = true;
+        }
+
         update(dt);
         scene.render();
     });
@@ -354,10 +360,6 @@ function initLogic() {
     const ball = new Ball(game);
     game.ball = ball;
 
-    // Overcharge UI
-    const uiOvercharge = new UIOvercharge(game);
-    game.uiOvercharge = uiOvercharge;
-
     // Movement (3D, but preserving approach speed + timing hooks)
     const movement = initMovement(game);
     game.movement = movement;
@@ -483,3 +485,4 @@ function updatePlayerFromInput(dt) {
     playerMesh.position.x = BABYLON.Scalar.Clamp(playerMesh.position.x, -7.5, 7.5);
     playerMesh.position.z = BABYLON.Scalar.Clamp(playerMesh.position.z, -11.5, -0.5);
 }
+
