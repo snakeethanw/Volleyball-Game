@@ -1,11 +1,13 @@
 // main.js
-// Full advanced Babylon.js scene + Roblox-style camera + shift-lock + integration
-// with advanced ball.js, movement.js, opponentAI.js, and uiOvercharge.js
-// Preserves original systems: shift-lock, pointer lock, roll-shot input,
-// AI profile/memory hooks, overcharge, rally flow.
+// Full advanced Babylon.js volleyball engine wiring
+// - Scene, camera, lighting, court, net
+// - Player + Opponent AI (attribute matrix, tilt, mood, learning)
+// - Ball (advanced engine)
+// - Overcharge UI (initialized safely in render loop)
+// - Match flow, scoring, state machine
 
-import { Ball } from "./ball.js";
 import { initMovement } from "./movement.js";
+import { Ball } from "./ball.js";
 import { OpponentAI } from "./opponentAI.js";
 import { UIOvercharge } from "./uiOvercharge.js";
 
@@ -16,9 +18,6 @@ let camera;
 
 let playerMesh;
 let opponentMesh;
-
-let shiftLockEnabled = false;
-let pointerLocked = false;
 
 const inputState = {
     forward: 0,
@@ -39,13 +38,15 @@ const game = {
     // 3D meshes
     playerMesh: null,
     opponentMesh: null,
+    court: null,
+    net: null,
 
-    // Logical player state (facing, etc.)
+    // Logical player state
     player: {
         facing: 1
     },
 
-    // AI + memory (ported from old engine)
+    // AI + memory
     aiProfile: null,
     aiMemory: null,
     aiReactionTimer: 0,
@@ -87,12 +88,14 @@ window.addEventListener("DOMContentLoaded", () => {
     setupCourt();
     setupCharacters();
     setupInput();
-
     initLogic();
+
+    let uiInitialized = false;
 
     engine.runRenderLoop(() => {
         const dt = engine.getDeltaTime() / 1000;
-        // Initialize UI AFTER first frame
+
+        // ✅ Initialize UI AFTER engine/scene are fully alive
         if (!uiInitialized) {
             game.uiOvercharge = new UIOvercharge(game);
             uiInitialized = true;
@@ -197,24 +200,20 @@ function setupCharacters() {
     playerMat.diffuseColor = new BABYLON.Color3(0.3, 0.8, 1.0);
     playerMesh.material = playerMat;
 
-    // Opponent
+    // Opponent placeholder (real mesh comes from OpponentAI)
     opponentMesh = BABYLON.MeshBuilder.CreateCapsule(
-        "opponent",
+        "opponentPlaceholder",
         { height: 2, radius: 0.5 },
         scene
     );
     opponentMesh.position = new BABYLON.Vector3(0, 1, 7);
-    opponentMesh.checkCollisions = true;
-
-    const opponentMat = new BABYLON.StandardMaterial("opponentMat", scene);
-    opponentMat.diffuseColor = new BABYLON.Color3(1.0, 0.4, 0.4);
-    opponentMesh.material = opponentMat;
+    opponentMesh.isVisible = false;
 
     game.playerMesh = playerMesh;
     game.opponentMesh = opponentMesh;
 }
 
-// ---------------- Input & Shift-Lock ----------------
+// ---------------- Input ----------------
 
 function setupInput() {
     window.addEventListener("keydown", (e) => {
@@ -240,10 +239,6 @@ function setupInput() {
                 break;
             case "KeyJ":
                 inputState.spike = true;
-                break;
-            case "ShiftLeft":
-            case "ShiftRight":
-                toggleShiftLock();
                 break;
         }
     });
@@ -292,41 +287,12 @@ function setupInput() {
     window.addEventListener("contextmenu", (e) => {
         e.preventDefault();
     });
-
-    document.addEventListener("pointerlockchange", () => {
-        pointerLocked = document.pointerLockElement === canvas;
-        if (!pointerLocked && shiftLockEnabled) {
-            shiftLockEnabled = false;
-        }
-    });
-}
-
-function toggleShiftLock() {
-    shiftLockEnabled = !shiftLockEnabled;
-
-    if (shiftLockEnabled) {
-        if (canvas.requestPointerLock) {
-            canvas.requestPointerLock({ unadjustedMovement: true });
-        }
-        snapPlayerToCamera();
-    } else {
-        if (document.exitPointerLock) {
-            document.exitPointerLock();
-        }
-    }
-}
-
-function snapPlayerToCamera() {
-    const forward = camera.getForwardRay().direction;
-    const angle = Math.atan2(forward.x, forward.z);
-    playerMesh.rotation.y = angle;
-    game.player.facing = forward.x >= 0 ? 1 : -1;
 }
 
 // ---------------- Logic Init ----------------
 
 function initLogic() {
-    // AI profile + memory (ported from old engine)
+    // AI profile + memory
     game.aiProfile = {
         aggression: 0.65,
         patience: 0.55,
@@ -351,37 +317,20 @@ function initLogic() {
 
     game.aiReactionTimer = 0;
 
-    // Opponent AI (3D, but using attribute matrix)
+    // Opponent AI
     const opponentAI = new OpponentAI(game);
     game.opponentAI = opponentAI;
     game.opponentMesh = opponentAI.mesh;
 
-    // Ball (advanced engine, 3D)
+    // Ball
     const ball = new Ball(game);
     game.ball = ball;
 
-    // Movement (3D, but preserving approach speed + timing hooks)
+    // Movement
     const movement = initMovement(game);
     game.movement = movement;
 
-    // Score + state text
-    const scoreText = new BABYLON.GUI.TextBlock("scoreText", "0 - 0");
-    scoreText.color = "white";
-    scoreText.fontSize = 32;
-    scoreText.top = "-45%";
-    scoreText.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_CENTER;
-    scoreText.verticalAlignment = BABYLON.GUI.Control.VERTICAL_ALIGNMENT_CENTER;
-    uiOvercharge.ui.addControl(scoreText);
-
-    const stateText = new BABYLON.GUI.TextBlock("stateText", "SERVE");
-    stateText.color = "#ccccff";
-    stateText.fontSize = 22;
-    stateText.top = "-40%";
-    stateText.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_CENTER;
-    stateText.verticalAlignment = BABYLON.GUI.Control.VERTICAL_ALIGNMENT_CENTER;
-    uiOvercharge.ui.addControl(stateText);
-
-    // Point resolution hook
+    // Score + state text (created once UIOvercharge exists)
     game.onPointWon = function (winner) {
         game.state = "point";
 
@@ -393,16 +342,20 @@ function initLogic() {
             opponentAI.onPointResult(true);
         }
 
-        scoreText.text = `${game.score.player} - ${game.score.opponent}`;
-        stateText.text = winner === "player" ? "YOU SCORED" : "OPPONENT SCORED";
+        if (game.uiOvercharge && game.uiOvercharge.scoreText && game.uiOvercharge.stateText) {
+            game.uiOvercharge.scoreText.text = `${game.score.player} - ${game.score.opponent}`;
+            game.uiOvercharge.stateText.text = winner === "player" ? "YOU SCORED" : "OPPONENT SCORED";
+        }
 
         game.playerOvercharge = Math.max(0, game.playerOvercharge - 0.25);
         game.opponentOvercharge = Math.max(0, game.opponentOvercharge - 0.25);
-        uiOvercharge.resetFlash();
+        if (game.uiOvercharge) game.uiOvercharge.resetFlash();
 
         setTimeout(() => {
             const nextServeSide = winner === "player" ? "player" : "opponent";
-            stateText.text = "SERVE";
+            if (game.uiOvercharge && game.uiOvercharge.stateText) {
+                game.uiOvercharge.stateText.text = "SERVE";
+            }
             ball.startServe(nextServeSide, "float");
         }, 1200);
     };
@@ -422,7 +375,6 @@ function getTimeOfDayMood() {
 // ---------------- Update Loop ----------------
 
 function update(dt) {
-    updateCameraFollow(dt);
     updatePlayerFromInput(dt);
 
     if (game.state === "rally" || game.state === "servePause") {
@@ -434,24 +386,6 @@ function update(dt) {
     if (game.uiOvercharge) {
         game.uiOvercharge.setCharge(game.playerOvercharge);
         game.uiOvercharge.update(dt);
-    }
-}
-
-function updateCameraFollow(dt) {
-    const target = playerMesh.position.clone();
-    target.y += 1.5;
-
-    camera.target = BABYLON.Vector3.Lerp(
-        camera.target,
-        target,
-        0.15
-    );
-
-    if (shiftLockEnabled) {
-        const forward = camera.getForwardRay().direction;
-        const angle = Math.atan2(forward.x, forward.z);
-        playerMesh.rotation.y = angle;
-        game.player.facing = forward.x >= 0 ? 1 : -1;
     }
 }
 
@@ -471,11 +405,9 @@ function updatePlayerFromInput(dt) {
         moveDir.normalize();
         playerMesh.position.addInPlace(moveDir.scale(moveSpeed * dt));
 
-        if (!shiftLockEnabled) {
-            const angle = Math.atan2(moveDir.x, moveDir.z);
-            playerMesh.rotation.y = angle;
-            game.player.facing = moveDir.x >= 0 ? 1 : -1;
-        }
+        const angle = Math.atan2(moveDir.x, moveDir.z);
+        playerMesh.rotation.y = angle;
+        game.player.facing = moveDir.x >= 0 ? 1 : -1;
     }
 
     if (playerMesh.position.y < 1) {
@@ -485,4 +417,3 @@ function updatePlayerFromInput(dt) {
     playerMesh.position.x = BABYLON.Scalar.Clamp(playerMesh.position.x, -7.5, 7.5);
     playerMesh.position.z = BABYLON.Scalar.Clamp(playerMesh.position.z, -11.5, -0.5);
 }
-
