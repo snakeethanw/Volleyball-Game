@@ -1,150 +1,113 @@
-// uiOvercharge.js
-// Hybrid S1 + S4 Overcharge Meter with E1 angled ends
-// Always visible during gameplay, hidden in menus
+// uiOvercharge.js — Babylon.js GUI Overcharge Meter
+// Hybrid S1 + S4 esports bar with angled ends, neon outline, gradient fill, pulse at high charge
 
 export class UIOvercharge {
     constructor(game) {
         this.game = game;
 
-        // Charge state
-        this.charge = 0;          // 0–1
-        this.targetCharge = 0;    // smooth lerp target
+        // Create fullscreen GUI layer
+        this.ui = BABYLON.GUI.AdvancedDynamicTexture.CreateFullscreenUI("UIOvercharge");
 
-        // Visibility
+        // Root container
+        this.container = new BABYLON.GUI.Rectangle("overchargeContainer");
+        this.container.width = "40%";
+        this.container.height = "40px";
+        this.container.thickness = 0;
+        this.container.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_CENTER;
+        this.container.verticalAlignment = BABYLON.GUI.Control.VERTICAL_ALIGNMENT_BOTTOM;
+        this.container.top = "-40px"; // lift slightly above bottom
+        this.ui.addControl(this.container);
+
+        // Outer neon frame
+        this.frame = new BABYLON.GUI.Rectangle("overchargeFrame");
+        this.frame.width = 1;
+        this.frame.height = 1;
+        this.frame.thickness = 3;
+        this.frame.color = "#00eaff"; // neon cyan
+        this.frame.cornerRadius = 12; // soft angled ends
+        this.frame.alpha = 0.9;
+        this.container.addControl(this.frame);
+
+        // Fill bar (masked inside frame)
+        this.fill = new BABYLON.GUI.Rectangle("overchargeFill");
+        this.fill.width = "0%"; // dynamic
+        this.fill.height = 1;
+        this.fill.thickness = 0;
+        this.fill.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_LEFT;
+        this.fill.cornerRadius = 12;
+
+        // Gradient fill
+        const gradient = new BABYLON.GUI.LinearGradient(0, 0, 1, 0);
+        gradient.addColorStop(0, "#ffe066"); // yellow
+        gradient.addColorStop(0.5, "#ff8c42"); // orange
+        gradient.addColorStop(1, "#ff3b3b"); // red
+        this.fill.backgroundGradient = gradient;
+
+        this.frame.addControl(this.fill);
+
+        // Pulse animation at high charge
+        this.pulseAnim = null;
+
         this.visible = true;
-        this.alpha = 1;           // fade animation
-
-        // Animation helpers
-        this.pulseTimer = 0;
-        this.glowTimer = 0;
-        this.shakeTimer = 0;
-
-        // Layout
-        this.widthRatio = 0.35;   // % of screen width
-        this.height = 22;
-        this.outlineWidth = 2;
-
-        // Fade speeds
-        this.fadeSpeed = 0.15;
+        this.charge = 0;
     }
 
-    // Called by main.js
+    setVisible(v) {
+        this.visible = v;
+        this.container.isVisible = v;
+    }
+
     setCharge(value) {
-        this.targetCharge = Math.max(0, Math.min(1, value));
-    }
-
-    // Called by main.js when entering/exiting menus
-    setVisible(isVisible) {
-        this.visible = isVisible;
+        this.charge = Math.max(0, Math.min(1, value));
     }
 
     update(dt) {
-        // Smooth charge animation
-        this.charge += (this.targetCharge - this.charge) * 0.12;
+        // Smooth width interpolation
+        const current = parseFloat(this.fill.width);
+        const target = this.charge;
+        const lerped = current + (target - current) * 0.15;
+        this.fill.width = (lerped * 100).toFixed(1) + "%";
 
-        // Fade animation
-        const targetAlpha = this.visible ? 1 : 0;
-        this.alpha += (targetAlpha - this.alpha) * this.fadeSpeed;
-
-        // Pulse/glow timers
-        if (this.charge > 0.8) this.pulseTimer += dt * 4;
-        if (this.charge > 0.95) this.glowTimer += dt * 6;
-
-        // Shake on full overcharge
-        if (this.charge >= 1 && this.shakeTimer < 0.2) {
-            this.shakeTimer += dt;
-        } else if (this.charge < 1) {
-            this.shakeTimer = 0;
-        }
-    }
-
-    draw(ctx, canvas) {
-        if (this.alpha <= 0.01) return;
-
-        const barWidth = canvas.width * this.widthRatio;
-        const barHeight = this.height;
-        const x = (canvas.width - barWidth) / 2;
-        const y = canvas.height - barHeight - 20;
-
-        // Shake effect
-        let shakeX = 0;
-        if (this.shakeTimer > 0) {
-            shakeX = Math.sin(this.shakeTimer * 40) * 2;
-        }
-
-        ctx.save();
-        ctx.globalAlpha = this.alpha;
-
-        // Outer neon outline
-        ctx.strokeStyle = this.getOutlineColor();
-        ctx.lineWidth = this.outlineWidth;
-        this.drawAngledBar(ctx, x + shakeX, y, barWidth, barHeight, false);
-
-        // Fill
-        ctx.fillStyle = this.getFillGradient(ctx, x, y, barWidth, barHeight);
-        this.drawAngledBar(ctx, x + shakeX, y, barWidth * this.charge, barHeight, true);
-
-        // Pulse overlay
-        if (this.charge > 0.8) {
-            const pulse = (Math.sin(this.pulseTimer) + 1) * 0.15;
-            ctx.fillStyle = `rgba(255, 255, 255, ${pulse})`;
-            this.drawAngledBar(ctx, x + shakeX, y, barWidth * this.charge, barHeight, true);
-        }
-
-        // Glow flicker
-        if (this.charge > 0.95) {
-            const flicker = (Math.sin(this.glowTimer * 3) + 1) * 0.1;
-            ctx.strokeStyle = `rgba(255, 80, 80, ${flicker})`;
-            ctx.lineWidth = this.outlineWidth + 1;
-            this.drawAngledBar(ctx, x + shakeX, y, barWidth, barHeight, false);
-        }
-
-        // Percentage text
-        ctx.font = "14px 'Orbitron', sans-serif";
-        ctx.fillStyle = "white";
-        ctx.textAlign = "center";
-        ctx.textBaseline = "middle";
-        ctx.fillText(Math.round(this.charge * 100) + "%", x + barWidth / 2 + shakeX, y + barHeight / 2);
-
-        ctx.restore();
-    }
-
-    // Draws the angled bar shape (E1 soft angled ends)
-    drawAngledBar(ctx, x, y, w, h, fill) {
-        const angle = 10; // px offset for soft angle
-
-        ctx.beginPath();
-        ctx.moveTo(x + angle, y);
-        ctx.lineTo(x + w - angle, y);
-        ctx.lineTo(x + w, y + h);
-        ctx.lineTo(x, y + h);
-        ctx.closePath();
-
-        if (fill) ctx.fill();
-        else ctx.stroke();
-    }
-
-    // Gradient fill based on charge
-    getFillGradient(ctx, x, y, w, h) {
-        const grad = ctx.createLinearGradient(x, y, x + w, y);
-
-        if (this.charge < 0.3) {
-            grad.addColorStop(0, "#ffe066");
-            grad.addColorStop(1, "#ffcc33");
-        } else if (this.charge < 0.7) {
-            grad.addColorStop(0, "#ffb347");
-            grad.addColorStop(1, "#ff8c00");
+        // Pulse when > 85%
+        if (this.charge > 0.85) {
+            if (!this.pulseAnim) {
+                this.startPulse();
+            }
         } else {
-            grad.addColorStop(0, "#ff6b6b");
-            grad.addColorStop(1, "#ff1e1e");
+            if (this.pulseAnim) {
+                this.stopPulse();
+            }
         }
-
-        return grad;
     }
 
-    // Neon outline color
-    getOutlineColor() {
-        const intensity = 0.4 + this.charge * 0.6;
-        return `rgba(255, 80, 80, ${intensity})`;
+    startPulse() {
+        this.pulseAnim = new BABYLON.Animation(
+            "pulseAnim",
+            "alpha",
+            30,
+            BABYLON.Animation.ANIMATIONTYPE_FLOAT,
+            BABYLON.Animation.ANIMATIONLOOPMODE_CYCLE
+        );
+
+        const keys = [
+            { frame: 0, value: 0.9 },
+            { frame: 15, value: 1.0 },
+            { frame: 30, value: 0.9 }
+        ];
+
+        this.pulseAnim.setKeys(keys);
+        this.frame.animations = [this.pulseAnim];
+
+        this.game.scene.beginAnimation(this.frame, 0, 30, true);
+    }
+
+    stopPulse() {
+        this.game.scene.stopAnimation(this.frame);
+        this.frame.alpha = 0.9;
+        this.pulseAnim = null;
+    }
+
+    draw() {
+        // Babylon GUI draws automatically — no manual draw needed
     }
 }
