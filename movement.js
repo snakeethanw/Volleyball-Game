@@ -1,123 +1,127 @@
 // movement.js
-// Handles player movement, jump, input, and tilt (keys + slight movement influence).
+// Player movement and Overcharge charge/decay/reset logic
 
-export function createMovementController(scene, player) {
-  const input = {
-    left: false,
-    right: false,
-    forward: false,
-    back: false,
-    jump: false
-  };
+export function initPlayerMovement(game) {
+    const { canvas } = game;
+    game.player.x = canvas.width * 0.25;
+    game.player.y = canvas.height * 0.6;
+    game.player.vx = 0;
+    game.player.vy = 0;
+    game.player.isGrounded = true;
+    game.player.isApproaching = false;
+    game.player.isJumping = false;
+    game.player.isSpiking = false;
 
-  const action = {
-    spike: false,
-    block: false
-  };
+    // Input state
+    game.input = {
+        left: false,
+        right: false,
+        spike: false
+    };
 
-  const velocity = new BABYLON.Vector3(0, 0, 0);
+    setupMovementInput(game);
+}
 
-  const tilt = {
-    side: 0,    // -1 (left) to 1 (right)
-    forward: 0, // 0..1
-    back: 0     // 0..1
-  };
+function setupMovementInput(game) {
+    window.addEventListener("keydown", (e) => {
+        if (e.code === "ArrowLeft" || e.code === "KeyA") game.input.left = true;
+        if (e.code === "ArrowRight" || e.code === "KeyD") game.input.right = true;
+        if (e.code === "KeyJ") game.input.spike = true;
+    });
 
-  const tiltTarget = { side: 0, forward: 0, back: 0 };
+    window.addEventListener("keyup", (e) => {
+        if (e.code === "ArrowLeft" || e.code === "KeyA") game.input.left = false;
+        if (e.code === "ArrowRight" || e.code === "KeyD") game.input.right = false;
+        if (e.code === "KeyJ") game.input.spike = false;
+    });
+}
 
-  const moveSpeed = 4 * player.stats.speed;
-  const jumpStrength = 6 * player.stats.jump;
+export function updatePlayerMovement(game, dt) {
+    const p = game.player;
+    const speed = 260;
+    const friction = 0.85;
+    const gravity = 1400;
+    const jumpVelocity = -650;
 
-  let isGrounded = true;
-  let jumpCooldown = 0;
+    // Horizontal input
+    let moveDir = 0;
+    if (game.input.left) moveDir -= 1;
+    if (game.input.right) moveDir += 1;
 
-  // INPUT
-  window.addEventListener("keydown", e => {
-    switch (e.key) {
-      case "a":
-      case "ArrowLeft": input.left = true; tiltTarget.side = -1; break;
-      case "d":
-      case "ArrowRight": input.right = true; tiltTarget.side = 1; break;
-      case "w":
-      case "ArrowUp": input.forward = true; tiltTarget.forward = 1; tiltTarget.back = 0; break;
-      case "s":
-      case "ArrowDown": input.back = true; tiltTarget.back = 1; tiltTarget.forward = 0; break;
-      case " ": input.jump = true; break;
-      case "j": action.spike = true; break;
-      case "k": action.block = true; break;
+    if (moveDir !== 0) {
+        p.vx = moveDir * speed;
+        p.facing = moveDir;
+    } else {
+        p.vx *= friction;
+        if (Math.abs(p.vx) < 1) p.vx = 0;
     }
-  });
 
-  window.addEventListener("keyup", e => {
-    switch (e.key) {
-      case "a":
-      case "ArrowLeft": input.left = false; if (!input.right) tiltTarget.side = 0; break;
-      case "d":
-      case "ArrowRight": input.right = false; if (!input.left) tiltTarget.side = 0; break;
-      case "w":
-      case "ArrowUp": input.forward = false; if (!input.back) tiltTarget.forward = 0; break;
-      case "s":
-      case "ArrowDown": input.back = false; if (!input.forward) tiltTarget.back = 0; break;
-      case " ": input.jump = false; break;
-      case "j": action.spike = false; break;
-      case "k": action.block = false; break;
-    }
-  });
+    // Approach detection: moving toward net (center)
+    const netX = game.canvas.width / 2;
+    const movingTowardNet =
+        (p.x < netX && p.vx > 0) ||
+        (p.x > netX && p.vx < 0);
 
-  scene.onBeforeRenderObservable.add(() => {
-    const dt = scene.getEngine().getDeltaTime() / 1000;
-
-    // Movement vector
-    let moveX = 0;
-    let moveZ = 0;
-
-    if (input.left) moveX -= 1;
-    if (input.right) moveX += 1;
-    if (input.forward) moveZ += 1;
-    if (input.back) moveZ -= 1;
-
-    const moveVec = new BABYLON.Vector3(moveX, 0, moveZ);
-    if (moveVec.length() > 0) moveVec.normalize().scaleInPlace(moveSpeed);
-
-    // Smooth acceleration
-    velocity.x = BABYLON.Scalar.Lerp(velocity.x, moveVec.x, 0.15);
-    velocity.z = BABYLON.Scalar.Lerp(velocity.z, moveVec.z, 0.15);
+    p.isApproaching = movingTowardNet && Math.abs(p.vx) > 40 && p.isGrounded;
 
     // Jump
-    if (jumpCooldown > 0) jumpCooldown -= dt;
-
-    if (input.jump && isGrounded && jumpCooldown <= 0) {
-      velocity.y = jumpStrength;
-      isGrounded = false;
-      jumpCooldown = 0.25;
-      if (player.onJump) player.onJump();
+    if (p.isGrounded && game.player.isJumping) {
+        p.vy = jumpVelocity;
+        p.isGrounded = false;
     }
 
-    velocity.y -= 18 * dt;
+    // Gravity
+    p.vy += gravity * dt;
 
-    // Apply movement
-    player.mesh.position.addInPlace(velocity.scale(dt));
+    // Integrate
+    p.x += p.vx * dt;
+    p.y += p.vy * dt;
 
-    // Ground
-    if (player.mesh.position.y <= 1) {
-      player.mesh.position.y = 1;
-      velocity.y = 0;
-      isGrounded = true;
+    // Ground collision
+    const groundY = game.canvas.height * 0.6;
+    if (p.y > groundY) {
+        p.y = groundY;
+        p.vy = 0;
+        p.isGrounded = true;
     }
 
-    // Tilt: keys + slight movement influence
-    const moveInfluenceSide = BABYLON.Scalar.Clamp(moveX * 0.25, -0.25, 0.25);
-    const moveInfluenceForward = moveZ > 0 ? 0.2 : 0;
-    const moveInfluenceBack = moveZ < 0 ? 0.2 : 0;
+    // Clamp within court
+    p.x = Math.max(40, Math.min(game.canvas.width * 0.5 - 40, p.x));
 
-    const targetSide = tiltTarget.side + moveInfluenceSide;
-    const targetForward = Math.min(1, tiltTarget.forward + moveInfluenceForward);
-    const targetBack = Math.min(1, tiltTarget.back + moveInfluenceBack);
+    // Spike intent
+    p.isSpiking = !p.isGrounded && game.input.spike;
 
-    tilt.side = BABYLON.Scalar.Lerp(tilt.side, targetSide, 0.2);
-    tilt.forward = BABYLON.Scalar.Lerp(tilt.forward, targetForward, 0.2);
-    tilt.back = BABYLON.Scalar.Lerp(tilt.back, targetBack, 0.2);
-  });
+    // --- Overcharge Logic ---
 
-  return { input, action, velocity, tilt };
+    let charge = game.playerOvercharge;
+    const isChampion = p.isChampion;
+
+    const buildRate = isChampion ? 0.9 : 1.0;
+    const decayRate = isChampion ? 0.6 : 0.8;
+
+    // Build from approach speed & distance
+    if (p.isApproaching) {
+        const speedFactor = Math.min(Math.abs(p.vx) / speed, 1);
+        charge += speedFactor * buildRate * dt * 0.6;
+    }
+
+    // Extra build when jumping out of an approach
+    if (!p.isGrounded && movingTowardNet && Math.abs(p.vx) > 40) {
+        charge += buildRate * dt * 0.4;
+    }
+
+    // Decay when stopping or moving backward
+    if (!p.isApproaching && p.isGrounded) {
+        charge -= decayRate * dt * 0.5;
+    }
+
+    // Decay in air without spike intent
+    if (!p.isGrounded && !p.isSpiking) {
+        charge -= decayRate * dt * 0.3;
+    }
+
+    // Reset after landing from spike (handled in ball.js when spike resolves)
+    // Here we just clamp
+    charge = Math.max(0, Math.min(1, charge));
+    game.playerOvercharge = charge;
 }
