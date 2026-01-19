@@ -78,7 +78,9 @@ window.addEventListener("DOMContentLoaded", () => {
     canvas = document.getElementById("gameCanvas");
     game.canvas = canvas;
 
-    engine = new BABYLON.Engine(canvas, true);
+    engine = new BABYLON.Engine(canvas, true, {
+        disableWebGPU: true
+    });
     scene = new BABYLON.Scene(engine);
     game.engine = engine;
     game.scene = scene;
@@ -417,3 +419,4 @@ function updatePlayerFromInput(dt) {
     playerMesh.position.x = BABYLON.Scalar.Clamp(playerMesh.position.x, -7.5, 7.5);
     playerMesh.position.z = BABYLON.Scalar.Clamp(playerMesh.position.z, -11.5, -0.5);
 }
+
