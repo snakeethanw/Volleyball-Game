@@ -4,8 +4,7 @@
 // - Neon frame + gradient fill
 // - Smooth lerp fill
 // - Pulse near full, flash at max
-// - Integrated with game.playerOvercharge
-// - Hooks for movement/AI-based gain/drain via game logic
+// - Integrated with game.playerOvercharge via setCharge()
 
 export class UIOvercharge {
     constructor(game) {
@@ -16,7 +15,7 @@ export class UIOvercharge {
             true,
             this.game.scene
         );
-        
+
         this.container = new BABYLON.GUI.Rectangle("overchargeContainer");
         this.container.width = "40%";
         this.container.height = "40px";
@@ -55,7 +54,23 @@ export class UIOvercharge {
         this.charge = 0;
         this.visible = true;
 
-        // Optional: text label
+        // Score + state text hooks
+        this.scoreText = new BABYLON.GUI.TextBlock("scoreText", "0 - 0");
+        this.scoreText.color = "white";
+        this.scoreText.fontSize = 32;
+        this.scoreText.top = "-45%";
+        this.scoreText.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_CENTER;
+        this.scoreText.verticalAlignment = BABYLON.GUI.Control.VERTICAL_ALIGNMENT_CENTER;
+        this.ui.addControl(this.scoreText);
+
+        this.stateText = new BABYLON.GUI.TextBlock("stateText", "SERVE");
+        this.stateText.color = "#ccccff";
+        this.stateText.fontSize = 22;
+        this.stateText.top = "-40%";
+        this.stateText.horizontalAlignment = BABYLON.GUI.Control.HORIZONTAL_ALIGNMENT_CENTER;
+        this.stateText.verticalAlignment = BABYLON.GUI.Control.VERTICAL_ALIGNMENT_CENTER;
+        this.ui.addControl(this.stateText);
+
         this.label = new BABYLON.GUI.TextBlock("overchargeLabel", "OVERCHARGE");
         this.label.color = "#a0eaff";
         this.label.fontSize = 16;
