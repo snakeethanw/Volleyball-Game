@@ -1,458 +1,507 @@
 // ball.js
-// Full volleyball ball system: hybrid realism (R3), spin, hit types, roll shots (RS2), rally logic
+// Full advanced volleyball ball engine:
+// - Physics with gravity, drag, Magnus (spin) force
+// - Multi-touch rally logic (bump -> set -> spike, max 3 per side)
+// - Spike / roll / tip / set / bump / serve variants
+// - Timing, height, approach speed, overcharge-based hit quality
+// - Net collision with spin dampening and deflection
+// - Serve faults, rally faults, out-of-bounds, net faults
+// - AI prediction helpers
+// - Replay event logging
 
-export function initBall(game) {
-    const { canvas } = game;
+export class Ball {
+    constructor(game) {
+        this.game = game;
+        const scene = game.scene;
 
-    game.ball = {
-        x: canvas.width / 2,
-        y: canvas.height / 3,
-        vx: 0,
-        vy: 0,
-        spin: 0,              // positive = topspin, negative = underspin
-        radius: 10,
-        inPlay: false,
-        lastHitBy: null,
-        lastHitType: null,    // "bump", "set", "spike", "overcharge", "tip", "roll"
-        trajectoryCache: []   // for AI prediction
-    };
+        // Visual
+        this.mesh = BABYLON.MeshBuilder.CreateSphere("ball", { diameter: 1 }, scene);
+        this.mesh.position = new BABYLON.Vector3(0, 6, 0);
+        const mat = new BABYLON.StandardMaterial("ballMat", scene);
+        mat.diffuseColor = new BABYLON.Color3(1, 0.9, 0.7);
+        mat.specularColor = new BABYLON.Color3(0.8, 0.8, 0.8);
+        this.mesh.material = mat;
 
-    if (!game.input) game.input = {};
-    game.input.rollShot = false;
+        // Physics state
+        this.velocity = new BABYLON.Vector3(0, 0, 0);
+        this.spin = new BABYLON.Vector3(0, 0, 0); // rad/s
 
-    // Right mouse button = roll shot
-    window.addEventListener("mousedown", (e) => {
-        if (e.button === 2) game.input.rollShot = true;
-    });
-    window.addEventListener("mouseup", (e) => {
-        if (e.button === 2) game.input.rollShot = false;
-    });
-    window.addEventListener("contextmenu", (e) => {
-        e.preventDefault();
-    });
-}
+        this.gravity = new BABYLON.Vector3(0, -24, 0);
+        this.magnusCoeff = 0.02;
+        this.airDrag = 0.02;
+        this.spinDecay = 0.985;
 
-export function updateBall(game, dt) {
-    const b = game.ball;
-    if (!b.inPlay) return;
+        // Rally state
+        this.inRally = false;
+        this.serveSide = "player"; // "player" | "opponent"
+        this.lastHitBy = null;     // "player" | "opponent"
+        this.lastHitType = null;   // "spike" | "roll" | "tip" | "set" | "serve" | "bump"
+        this.touchCountPlayer = 0;
+        this.touchCountOpponent = 0;
 
-    const gravity = 1200;
-    const airDrag = 0.995;
-    const spinLiftFactor = 0.0009; // hybrid realism: subtle but meaningful
+        // Touch sequence (for bump -> set -> spike)
+        this.lastTouchSequencePlayer = [];
+        this.lastTouchSequenceOpponent = [];
 
-    // Apply gravity
-    b.vy += gravity * dt;
+        // Court / net
+        this.net = game.net;
+        this.courtWidth = 16;
+        this.courtDepth = 24;
+        this.courtHalfWidth = this.courtWidth * 0.5;
+        this.courtHalfDepth = this.courtDepth * 0.5;
 
-    // Apply spin-induced lift (topspin pulls down, underspin floats)
-    const spinLift = -b.spin * spinLiftFactor;
-    b.vy += spinLift;
+        // Serve fault tracking
+        this.isServe = false;
+        this.serveType = "float";
+        this.serveTossHeightMin = 2.0;
+        this.serveNetFault = false;
 
-    // Integrate
-    b.x += b.vx * dt;
-    b.y += b.vy * dt;
+        // Replay / debug
+        this.rallyHistory = []; // { time, event, by, type, pos, vel, spin, extra }
 
-    // Air drag
-    b.vx *= airDrag;
-    b.vy *= airDrag;
-
-    handleCollisions(game, dt);
-    cacheTrajectory(game);
-    handlePlayerBallInteractions(game, dt);
-    handleOpponentBallInteractions(game, dt);
-}
-
-function handleCollisions(game, dt) {
-    const b = game.ball;
-    const { canvas } = game;
-    const floorY = canvas.height * 0.6;
-    const netX = canvas.width / 2;
-
-    // Floor
-    if (b.y > floorY - b.radius) {
-        b.y = floorY - b.radius;
-        b.vy *= -0.35;
-        b.vx *= 0.8;
-        b.spin *= 0.5;
-
-        // Rally end: ball touched ground
-        endRally(game, b.lastHitBy === "player" ? "opponent" : "player");
+        // Internal time
+        this._time = 0;
     }
 
-    // Net (simple vertical plane)
-    if (Math.abs(b.x - netX) < 4 && b.y < floorY && b.y > floorY - 220) {
-        b.x = b.x < netX ? netX - 4 : netX + 4;
-        b.vx *= -0.5;
-        b.spin *= 0.7;
-    }
+    // -----------------------
+    // Public rally interface
+    // -----------------------
 
-    // Side walls
-    if (b.x < 20) {
-        b.x = 20;
-        b.vx *= -0.6;
-        b.spin *= 0.7;
-    }
-    if (b.x > canvas.width - 20) {
-        b.x = canvas.width - 20;
-        b.vx *= -0.6;
-        b.spin *= 0.7;
-    }
-}
+    startServe(side = "player", serveType = "float") {
+        this.serveSide = side;
+        this.isServe = true;
+        this.serveType = serveType;
 
-function endRally(game, winner) {
-    game.ball.inPlay = false;
-    // You can hook scoring here:
-    // if (winner === "player") game.score.player++;
-    // else game.score.opponent++;
-}
+        this.inRally = false;
+        this.velocity.set(0, 0, 0);
+        this.spin.set(0, 0, 0);
+        this.touchCountPlayer = 0;
+        this.touchCountOpponent = 0;
+        this.lastHitBy = null;
+        this.lastHitType = null;
+        this.lastTouchSequencePlayer = [];
+        this.lastTouchSequenceOpponent = [];
+        this.rallyHistory = [];
+        this._time = 0;
+        this.serveNetFault = false;
 
-function cacheTrajectory(game) {
-    const b = game.ball;
-    const { canvas } = game;
-    const floorY = canvas.height * 0.6;
-
-    if (!b.inPlay) {
-        b.trajectoryCache = [];
-        return;
-    }
-
-    // Simple forward prediction for AI: simulate a few steps
-    const steps = 20;
-    const dt = 0.05;
-    let x = b.x;
-    let y = b.y;
-    let vx = b.vx;
-    let vy = b.vy;
-    let spin = b.spin;
-
-    const gravity = 1200;
-    const airDrag = 0.995;
-    const spinLiftFactor = 0.0009;
-
-    const points = [];
-    for (let i = 0; i < steps; i++) {
-        vy += gravity * dt;
-        vy += -spin * spinLiftFactor;
-        x += vx * dt;
-        y += vy * dt;
-        vx *= airDrag;
-        vy *= airDrag;
-
-        if (y > floorY - b.radius) {
-            y = floorY - b.radius;
-            vy *= -0.35;
-            vx *= 0.8;
-            spin *= 0.5;
-        }
-
-        points.push({ x, y });
-    }
-
-    b.trajectoryCache = points;
-}
-
-// ---------- Player Interactions ----------
-
-function handlePlayerBallInteractions(game, dt) {
-    const p = game.player;
-    const b = game.ball;
-    if (!b.inPlay) return;
-
-    const floorY = game.canvas.height * 0.6;
-    const contactX = p.x;
-    const contactY = p.y - 30;
-
-    const dx = b.x - contactX;
-    const dy = b.y - contactY;
-    const dist = Math.sqrt(dx * dx + dy * dy);
-
-    const withinReach = dist < 45;
-
-    if (!withinReach) return;
-
-    const isBelowChest = b.y > p.y - 10;
-    const isAboveHead = b.y < p.y - 60;
-    const isMid = !isBelowChest && !isAboveHead;
-
-    const wantsSpike = p.isSpiking;
-    const wantsRoll = game.input.rollShot;
-    const wantsSet = !wantsSpike && !wantsRoll && isMid;
-    const wantsBump = !wantsSpike && !wantsRoll && isBelowChest;
-    const wantsTip = wantsSpike && Math.abs(dx) < 15 && dy < -10;
-
-    const contactHeight = floorY - b.y;
-    const overchargeReady = game.playerOvercharge >= 0.98;
-
-    if (wantsSpike && !wantsRoll && !wantsTip) {
-        if (overchargeReady && contactHeight < 220) {
-            applyOverchargeSpike(game, p, b);
-            game.playerOvercharge = 0;
-            b.lastHitType = "overcharge";
+        if (side === "player") {
+            this.mesh.position = this.game.player.position.clone().add(new BABYLON.Vector3(0, 2.5, 1));
         } else {
-            applyNormalSpike(game, p, b);
-            game.playerOvercharge = 0;
-            b.lastHitType = "spike";
+            this.mesh.position = this.game.opponent.mesh.position.clone().add(new BABYLON.Vector3(0, 2.5, -1));
         }
-        b.lastHitBy = "player";
-        return;
+
+        this.game.state = "servePause";
+
+        this._recordEvent("system", "serve_start", { side, serveType });
+
+        setTimeout(() => {
+            this._executeServe(side, serveType);
+        }, 600);
     }
 
-    if (wantsRoll) {
-        applyRollShot(game, p, b);
-        game.playerOvercharge = Math.max(0, game.playerOvercharge - 0.2);
-        b.lastHitBy = "player";
-        b.lastHitType = "roll";
-        return;
+    // Called from movement.js when player attempts a hit
+    // context: { type, approachSpeed, jumpPhase, overcharge }
+    tryPlayerHit(context) {
+        if (!this.inRally && !this.isServe) return false;
+
+        const onPlayerSide = this.mesh.position.z < 0;
+        if (!onPlayerSide) return false;
+
+        const player = this.game.player;
+        const contactPoint = player.position.add(new BABYLON.Vector3(0, 1.6, 0));
+        const dist = BABYLON.Vector3.Distance(contactPoint, this.mesh.position);
+        if (dist > 2.6) return false;
+
+        const height = this.mesh.position.y;
+        if (height < 1.5 || height > 6.0) return false;
+
+        const { type, approachSpeed, jumpPhase, overcharge } = context;
+
+        const timingCenter = 0.6;
+        const timingError = Math.abs(jumpPhase - timingCenter);
+        const timingScore = BABYLON.Scalar.Clamp(1 - timingError / 0.4, 0, 1);
+
+        const approachNorm = BABYLON.Scalar.Clamp(approachSpeed / 8, 0, 1);
+        const overchargeNorm = BABYLON.Scalar.Clamp(overcharge, 0, 1);
+
+        const quality =
+            0.5 * timingScore +
+            0.3 * approachNorm +
+            0.2 * overchargeNorm;
+
+        const hitProfile = this._getPlayerHitProfile(type, quality, overchargeNorm);
+
+        const dirZ = 1;
+        const aimX = (this.mesh.position.x - player.position.x) * hitProfile.aimXFactor;
+        const vertical = hitProfile.verticalBase + hitProfile.verticalBonus * timingScore;
+        const power = hitProfile.basePower * (0.7 + 0.3 * timingScore) * (0.7 + 0.3 * approachNorm);
+
+        this.velocity = new BABYLON.Vector3(aimX, vertical, dirZ * power);
+        this.spin = hitProfile.spinDir.scale(hitProfile.spinMag * (0.5 + 0.5 * quality));
+
+        this.lastHitBy = "player";
+        this.lastHitType = type;
+
+        if (this.isServe) {
+            this.isServe = false;
+        }
+
+        this._incrementTouch("player", type);
+
+        this._recordEvent("player", "hit", {
+            type,
+            quality,
+            timingScore,
+            approachNorm,
+            overchargeNorm
+        });
+
+        return true;
     }
 
-    if (wantsTip) {
-        applyTip(game, p, b);
-        b.lastHitBy = "player";
-        b.lastHitType = "tip";
-        return;
+    // Called from opponentAI.js when AI attempts a hit
+    // context: { aggression, confidence, tilt }
+    opponentHit(context) {
+        if (!this.inRally && !this.isServe) return false;
+
+        const onOpponentSide = this.mesh.position.z > 0;
+        if (!onOpponentSide) return false;
+
+        const opponent = this.game.opponent.mesh;
+        const contactPoint = opponent.position.add(new BABYLON.Vector3(0, 1.6, 0));
+        const dist = BABYLON.Vector3.Distance(contactPoint, this.mesh.position);
+        if (dist > 2.8) return false;
+
+        const height = this.mesh.position.y;
+        if (height < 1.5 || height > 6.0) return false;
+
+        const { aggression, confidence, tilt } = context;
+
+        const targetX =
+            this.game.player.position.x +
+            (Math.random() - 0.5) * (4 + tilt * 4 - confidence * 2);
+
+        const targetZ = -8 + (Math.random() - 0.5) * (2 + tilt * 3);
+
+        const toTarget = new BABYLON.Vector3(
+            targetX - this.mesh.position.x,
+            3 - this.mesh.position.y,
+            targetZ - this.mesh.position.z
+        );
+        toTarget.normalize();
+
+        const basePower = 16 + aggression * 6;
+        const powerJitter = (Math.random() - 0.5) * 4 * (1 + tilt);
+        const power = basePower + powerJitter;
+
+        this.velocity = toTarget.scale(power);
+        this.velocity.y = 11 + Math.random() * 3;
+
+        const spinMag = 12 + aggression * 12;
+        this.spin = new BABYLON.Vector3(0, 10 + aggression * 10, 0).scale(spinMag / 20);
+
+        this.lastHitBy = "opponent";
+        this.lastHitType = "spike";
+
+        if (this.isServe) {
+            this.isServe = false;
+        }
+
+        this._incrementTouch("opponent", "spike");
+
+        this._recordEvent("opponent", "hit", {
+            type: "spike",
+            aggression,
+            confidence,
+            tilt
+        });
+
+        return true;
     }
 
-    if (wantsSet) {
-        applySet(game, p, b);
-        b.lastHitBy = "player";
-        b.lastHitType = "set";
-        return;
+    // For AI prediction
+    predictLanding(maxTime = 3.0, step = 0.03) {
+        const pos = this.mesh.position.clone();
+        const vel = this.velocity.clone();
+        const spin = this.spin.clone();
+
+        let t = 0;
+        while (t < maxTime) {
+            const magnus = BABYLON.Vector3.Cross(spin, vel).scale(this.magnusCoeff);
+            const accel = this.gravity.add(magnus).subtract(vel.scale(this.airDrag));
+
+            vel.addInPlace(accel.scale(step));
+            pos.addInPlace(vel.scale(step));
+
+            if (pos.y <= 0.5) break;
+            t += step;
+        }
+
+        return pos;
     }
 
-    if (wantsBump) {
-        applyBump(game, p, b);
-        b.lastHitBy = "player";
-        b.lastHitType = "bump";
-        return;
+    // -----------------------
+    // Physics update
+    // -----------------------
+
+    update(dt) {
+        this._time += dt;
+
+        const magnus = BABYLON.Vector3.Cross(this.spin, this.velocity).scale(this.magnusCoeff);
+        const accel = this.gravity.add(magnus).subtract(this.velocity.scale(this.airDrag));
+
+        this.velocity.addInPlace(accel.scale(dt));
+        this.mesh.position.addInPlace(this.velocity.scale(dt));
+
+        this.spin.scaleInPlace(Math.pow(this.spinDecay, dt * 60));
+
+        if (this.net) {
+            this._handleNetCollision();
+        }
+
+        if (this.mesh.position.y <= 0.5) {
+            this._handleGroundContact();
+        }
+
+        this._handleOutOfBounds();
     }
-}
 
-// ---------- Opponent Interactions (AI) ----------
+    // -----------------------
+    // Internal helpers
+    // -----------------------
 
-function handleOpponentBallInteractions(game, dt) {
-    const o = game.opponent;
-    const b = game.ball;
-    if (!b.inPlay) return;
+    _executeServe(side, serveType) {
+        this.inRally = true;
+        this.game.state = "rally";
 
-    const floorY = game.canvas.height * 0.6;
-    const contactX = o.x;
-    const contactY = o.y - 30;
+        let vel, spin;
 
-    const dx = b.x - contactX;
-    const dy = b.y - contactY;
-    const dist = Math.sqrt(dx * dx + dy * dy);
-
-    const withinReach = dist < 45;
-    if (!withinReach) return;
-
-    const isBelowChest = b.y > o.y - 10;
-    const isAboveHead = b.y < o.y - 60;
-    const isMid = !isBelowChest && !isAboveHead;
-
-    const ai = game.aiProfile;
-    const overchargeReady = game.opponentOvercharge >= 0.9 && ai.risk > 0.6;
-
-    const wantsSpike = aiDecisionSpike(game, ai, b, o);
-    const wantsRoll = aiDecisionRoll(game, ai, b, o);
-    const wantsTip = aiDecisionTip(game, ai, b, o);
-    const wantsSet = !wantsSpike && !wantsRoll && isMid;
-    const wantsBump = !wantsSpike && !wantsRoll && isBelowChest;
-
-    const contactHeight = floorY - b.y;
-
-    if (wantsSpike && !wantsRoll && !wantsTip) {
-        if (overchargeReady && contactHeight < 220) {
-            applyOverchargeSpikeAI(game, o, b);
-            game.opponentOvercharge = 0;
-            b.lastHitType = "overcharge";
+        if (serveType === "float") {
+            vel = new BABYLON.Vector3(0, 10, side === "player" ? 14 : -14);
+            spin = new BABYLON.Vector3(0, 0, 0);
+        } else if (serveType === "topspin") {
+            vel = new BABYLON.Vector3(0, 11, side === "player" ? 16 : -16);
+            spin = new BABYLON.Vector3(0, side === "player" ? -18 : 18, 0);
         } else {
-            applyNormalSpikeAI(game, o, b);
-            game.opponentOvercharge = Math.max(0, game.opponentOvercharge - 0.3);
-            b.lastHitType = "spike";
+            vel = new BABYLON.Vector3(0, 12, side === "player" ? 18 : -18);
+            spin = new BABYLON.Vector3(0, side === "player" ? -22 : 22, 0);
         }
-        b.lastHitBy = "opponent";
-        return;
+
+        this.velocity.copyFrom(vel);
+        this.spin.copyFrom(spin);
+
+        this.lastHitBy = side;
+        this.lastHitType = "serve";
+
+        this._recordEvent(side, "serve_contact", { serveType });
     }
 
-    if (wantsRoll) {
-        applyRollShotAI(game, o, b);
-        game.opponentOvercharge = Math.max(0, game.opponentOvercharge - 0.2);
-        b.lastHitBy = "opponent";
-        b.lastHitType = "roll";
-        return;
+    _getPlayerHitProfile(type, quality, overcharge) {
+        const q = BABYLON.Scalar.Clamp(quality, 0, 1);
+        const oc = BABYLON.Scalar.Clamp(overcharge, 0, 1);
+
+        if (type === "tip") {
+            return {
+                basePower: 10,
+                verticalBase: 9,
+                verticalBonus: 2,
+                aimXFactor: 0.2,
+                spinMag: 6,
+                spinDir: new BABYLON.Vector3(0, -1, 0)
+            };
+        }
+
+        if (type === "roll") {
+            return {
+                basePower: 14,
+                verticalBase: 10,
+                verticalBonus: 3,
+                aimXFactor: 0.35,
+                spinMag: 14,
+                spinDir: new BABYLON.Vector3(0, -1, 0)
+            };
+        }
+
+        if (type === "set") {
+            return {
+                basePower: 6,
+                verticalBase: 12,
+                verticalBonus: 4,
+                aimXFactor: 0.1,
+                spinMag: 4,
+                spinDir: new BABYLON.Vector3(0, 0, 0)
+            };
+        }
+
+        if (type === "bump") {
+            return {
+                basePower: 8,
+                verticalBase: 10,
+                verticalBonus: 3,
+                aimXFactor: 0.25,
+                spinMag: 3,
+                spinDir: new BABYLON.Vector3(0, 0, 0)
+            };
+        }
+
+        return {
+            basePower: 18 + oc * 6,
+            verticalBase: 11,
+            verticalBonus: 4,
+            aimXFactor: 0.4,
+            spinMag: 20 + oc * 20,
+            spinDir: new BABYLON.Vector3(0, -1, 0)
+        };
     }
 
-    if (wantsTip) {
-        applyTipAI(game, o, b);
-        b.lastHitBy = "opponent";
-        b.lastHitType = "tip";
-        return;
+    _incrementTouch(side, type) {
+        if (side === "player") {
+            this.touchCountPlayer = Math.min(3, this.touchCountPlayer + 1);
+            this.lastTouchSequencePlayer.push(type);
+            if (this.lastTouchSequencePlayer.length > 3) {
+                this.lastTouchSequencePlayer.shift();
+            }
+        } else {
+            this.touchCountOpponent = Math.min(3, this.touchCountOpponent + 1);
+            this.lastTouchSequenceOpponent.push(type);
+            if (this.lastTouchSequenceOpponent.length > 3) {
+                this.lastTouchSequenceOpponent.shift();
+            }
+        }
     }
 
-    if (wantsSet) {
-        applySetAI(game, o, b);
-        b.lastHitBy = "opponent";
-        b.lastHitType = "set";
-        return;
+    _handleNetCollision() {
+        const netBox = this.net.getBoundingInfo().boundingBox;
+        const ballBox = this.mesh.getBoundingInfo().boundingBox;
+
+        if (!ballBox.intersectsBox(netBox)) return;
+
+        const prevPos = this.mesh.position.subtract(this.velocity.scale(1 / 60));
+        const wasOnPlayerSide = prevPos.z < 0;
+        const nowOnOpponentSide = this.mesh.position.z > 0;
+
+        if (this.isServe) {
+            this.serveNetFault = true;
+        }
+
+        if (wasOnPlayerSide && nowOnOpponentSide) {
+            this.mesh.position.z = netBox.minimumWorld.z - 0.6;
+        } else if (!wasOnPlayerSide && !nowOnOpponentSide) {
+            this.mesh.position.z = netBox.maximumWorld.z + 0.6;
+        }
+
+        this.velocity.z *= -0.4;
+        this.velocity.x *= 0.7;
+        this.spin.scaleInPlace(0.7);
+
+        this._recordEvent("system", "net_contact", {
+            lastHitBy: this.lastHitBy,
+            isServe: this.isServe
+        });
     }
 
-    if (wantsBump) {
-        applyBumpAI(game, o, b);
-        b.lastHitBy = "opponent";
-        b.lastHitType = "bump";
-        return;
+    _handleGroundContact() {
+        this.mesh.position.y = 0.5;
+
+        if (!this.inRally && !this.isServe) {
+            this.velocity.y = 0;
+            return;
+        }
+
+        const side = this.mesh.position.z < 0 ? "player" : "opponent";
+
+        if (side === "player") {
+            this.touchCountPlayer += 1;
+        } else {
+            this.touchCountOpponent += 1;
+        }
+
+        this._recordEvent("system", "ground_contact", {
+            side,
+            lastHitBy: this.lastHitBy,
+            lastHitType: this.lastHitType,
+            touchCountPlayer: this.touchCountPlayer,
+            touchCountOpponent: this.touchCountOpponent
+        });
+
+        let winner;
+
+        if (this.isServe) {
+            if (this.serveNetFault) {
+                winner = this.serveSide === "player" ? "opponent" : "player";
+            } else {
+                if (side === this.serveSide) {
+                    winner = this.serveSide === "player" ? "opponent" : "player";
+                } else {
+                    winner = this.serveSide;
+                }
+            }
+            this.isServe = false;
+        } else {
+            winner = this._resolvePointWinner(side);
+        }
+
+        this.inRally = false;
+        this.velocity.set(0, 0, 0);
+        this.spin.set(0, 0, 0);
+
+        this.game.onPointWon(winner);
     }
-}
 
-// ---------- Hit Implementations (Player) ----------
+    _handleOutOfBounds() {
+        const x = this.mesh.position.x;
+        const z = this.mesh.position.z;
 
-function applyBump(game, p, b) {
-    const baseSpeed = 650;
-    const angle = -Math.PI * 0.35;
-    const dirX = p.x < game.canvas.width / 2 ? 1 : -1;
+        const outX = Math.abs(x) > this.courtHalfWidth + 1;
+        const outZ = Math.abs(z) > this.courtHalfDepth + 1;
 
-    b.vx = dirX * baseSpeed * Math.cos(angle);
-    b.vy = baseSpeed * Math.sin(angle);
-    b.spin = -80; // slight underspin
-}
+        if (!outX && !outZ) return;
+        if (!this.inRally && !this.isServe) return;
 
-function applySet(game, p, b) {
-    const baseSpeed = 520;
-    const angle = -Math.PI * 0.6;
-    const dirX = p.x < game.canvas.width / 2 ? 1 : -1;
+        this._recordEvent("system", "out_of_bounds", {
+            x,
+            z,
+            lastHitBy: this.lastHitBy,
+            lastHitType: this.lastHitType
+        });
 
-    b.vx = dirX * baseSpeed * Math.cos(angle);
-    b.vy = baseSpeed * Math.sin(angle);
-    b.spin = 40; // light topspin
-}
+        let winner;
+        if (this.lastHitBy === "player") {
+            winner = "opponent";
+        } else if (this.lastHitBy === "opponent") {
+            winner = "player";
+        } else {
+            winner = z < 0 ? "opponent" : "player";
+        }
 
-function applyNormalSpike(game, p, b) {
-    const baseSpeed = 950;
-    const angleDown = Math.PI * 0.65;
-    const dirX = p.facing;
+        this.inRally = false;
+        this.isServe = false;
+        this.velocity.set(0, 0, 0);
+        this.spin.set(0, 0, 0);
 
-    b.vx = dirX * baseSpeed * Math.cos(angleDown);
-    b.vy = baseSpeed * Math.sin(angleDown);
-    b.spin = 160; // strong topspin
-}
+        this.game.onPointWon(winner);
+    }
 
-function applyOverchargeSpike(game, p, b) {
-    const baseSpeed = 1250;
-    const angleDown = Math.PI * 0.8;
-    const dirX = p.facing;
+    _resolvePointWinner(groundSide) {
+        if (this.lastHitBy === "player" && groundSide === "player") return "opponent";
+        if (this.lastHitBy === "opponent" && groundSide === "opponent") return "player";
 
-    b.vx = dirX * baseSpeed * Math.cos(angleDown);
-    b.vy = baseSpeed * Math.sin(angleDown);
-    b.spin = 220; // very strong topspin
-}
+        if (this.lastHitBy === "player" && groundSide === "opponent") return "player";
+        if (this.lastHitBy === "opponent" && groundSide === "player") return "opponent";
 
-function applyRollShot(game, p, b) {
-    const baseSpeed = 720; // RS2 hybrid: faster than realistic, slower than spike
-    const angle = -Math.PI * 0.55; // higher arc than spike
-    const dirX = p.facing;
+        return groundSide === "player" ? "opponent" : "player";
+    }
 
-    b.vx = dirX * baseSpeed * Math.cos(angle);
-    b.vy = baseSpeed * Math.sin(angle);
-    b.spin = 180; // heavy topspin for dip
-}
-
-function applyTip(game, p, b) {
-    const baseSpeed = 420;
-    const angle = -Math.PI * 0.4;
-    const dirX = p.facing;
-
-    b.vx = dirX * baseSpeed * Math.cos(angle);
-    b.vy = baseSpeed * Math.sin(angle);
-    b.spin = 60;
-}
-
-// ---------- Hit Implementations (AI) ----------
-
-function applyBumpAI(game, o, b) {
-    const baseSpeed = 630;
-    const angle = -Math.PI * 0.35;
-    const dirX = o.x > game.canvas.width / 2 ? -1 : 1;
-
-    b.vx = dirX * baseSpeed * Math.cos(angle);
-    b.vy = baseSpeed * Math.sin(angle);
-    b.spin = -70;
-}
-
-function applySetAI(game, o, b) {
-    const baseSpeed = 500;
-    const angle = -Math.PI * 0.6;
-    const dirX = o.x > game.canvas.width / 2 ? -1 : 1;
-
-    b.vx = dirX * baseSpeed * Math.cos(angle);
-    b.vy = baseSpeed * Math.sin(angle);
-    b.spin = 40;
-}
-
-function applyNormalSpikeAI(game, o, b) {
-    const baseSpeed = 900;
-    const angleDown = Math.PI * 0.65;
-    const dirX = o.x > game.canvas.width / 2 ? -1 : 1;
-
-    b.vx = dirX * baseSpeed * Math.cos(angleDown);
-    b.vy = baseSpeed * Math.sin(angleDown);
-    b.spin = 150;
-}
-
-function applyOverchargeSpikeAI(game, o, b) {
-    const baseSpeed = 1180;
-    const angleDown = Math.PI * 0.78;
-    const dirX = o.x > game.canvas.width / 2 ? -1 : 1;
-
-    b.vx = dirX * baseSpeed * Math.cos(angleDown);
-    b.vy = baseSpeed * Math.sin(angleDown);
-    b.spin = 210;
-}
-
-function applyRollShotAI(game, o, b) {
-    const baseSpeed = 700;
-    const angle = -Math.PI * 0.55;
-    const dirX = o.x > game.canvas.width / 2 ? -1 : 1;
-
-    b.vx = dirX * baseSpeed * Math.cos(angle);
-    b.vy = baseSpeed * Math.sin(angle);
-    b.spin = 170;
-}
-
-function applyTipAI(game, o, b) {
-    const baseSpeed = 400;
-    const angle = -Math.PI * 0.4;
-    const dirX = o.x > game.canvas.width / 2 ? -1 : 1;
-
-    b.vx = dirX * baseSpeed * Math.cos(angle);
-    b.vy = baseSpeed * Math.sin(angle);
-    b.spin = 50;
-}
-
-// ---------- AI Decision Helpers ----------
-
-function aiDecisionSpike(game, ai, b, o) {
-    const floorY = game.canvas.height * 0.6;
-    const contactHeight = floorY - b.y;
-    const highEnough = contactHeight < 260 && contactHeight > 120;
-    const ballOnTheirSide = b.x > game.canvas.width / 2 + 20;
-    const aggressive = ai.aggression > 0.5;
-    return highEnough && ballOnTheirSide && aggressive;
-}
-
-function aiDecisionRoll(game, ai, b, o) {
-    const floorY = game.canvas.height * 0.6;
-    const contactHeight = floorY - b.y;
-    const midHeight = contactHeight >= 140 && contactHeight <= 260;
-    const ballOnTheirSide = b.x > game.canvas.width / 2 + 20;
-    const risk = ai.risk > 0.4;
-    const patience = ai.patience > 0.3;
-    return midHeight && ballOnTheirSide && risk && patience;
-}
-
-function aiDecisionTip(game, ai, b, o) {
-    const floorY = game.canvas.height * 0.6;
-    const contactHeight = floorY - b.y;
-    const closeToNet = Math.abs(b.x - game.canvas.width / 2) < 80;
-    const midHeight = contactHeight > 120 && contactHeight < 220;
-    const trickiness = ai.risk > 0.5 && ai.patience > 0.5;
-    return closeToNet && midHeight && trickiness;
+    _recordEvent(by, event, extra = {}) {
+        this.rallyHistory.push({
+            time: this._time,
+            by,
+            event,
+            pos: this.mesh.position.clone(),
+            vel: this.velocity.clone(),
+            spin: this.spin.clone(),
+            extra
+        });
+    }
 }
