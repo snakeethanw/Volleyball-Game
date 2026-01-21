@@ -3,7 +3,7 @@
 // - Scene, camera, lighting, court, net
 // - Player + Opponent AI (attribute matrix, tilt, mood, learning)
 // - Ball (advanced engine)
-// - Overcharge UI for Champion (initialized safely in render loop)
+// - Overcharge UI (initialized safely in render loop)
 // - Match flow, scoring, state machine
 
 import { initMovement } from "./movement.js";
@@ -31,7 +31,7 @@ const inputState = {
 
 const game = {
     canvas: null,
-    : null,
+    engine: null,
     scene: null,
     camera: null,
 
@@ -78,10 +78,10 @@ window.addEventListener("DOMContentLoaded", () => {
     canvas = document.getElementById("gameCanvas");
     game.canvas = canvas;
 
-     = new BABYLON.(canvas, true, {
+    // ✅ WebGL forced — prevents Babylon WebGPU crash
+    engine = new BABYLON.Engine(canvas, true, {
         disableWebGPU: true
     });
-
     console.log("✅ Babylon engine initialized with WebGL");
 
     scene = new BABYLON.Scene(engine);
@@ -100,7 +100,7 @@ window.addEventListener("DOMContentLoaded", () => {
     engine.runRenderLoop(() => {
         const dt = engine.getDeltaTime() / 1000;
 
-        // ✅ Initialize UI AFTER engine/scene are fully alive
+        // Initialize UI AFTER engine/scene are fully alive
         if (!uiInitialized) {
             game.uiOvercharge = new UIOvercharge(game);
             uiInitialized = true;
@@ -422,6 +422,3 @@ function updatePlayerFromInput(dt) {
     playerMesh.position.x = BABYLON.Scalar.Clamp(playerMesh.position.x, -7.5, 7.5);
     playerMesh.position.z = BABYLON.Scalar.Clamp(playerMesh.position.z, -11.5, -0.5);
 }
-
-
-
