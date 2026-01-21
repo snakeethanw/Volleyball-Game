@@ -3,7 +3,7 @@
 // - Scene, camera, lighting, court, net
 // - Player + Opponent AI (attribute matrix, tilt, mood, learning)
 // - Ball (advanced engine)
-// - Overcharge UI (initialized safely in render loop)
+// - Overcharge UI for Champion (initialized safely in render loop)
 // - Match flow, scoring, state machine
 
 import { initMovement } from "./movement.js";
@@ -419,4 +419,5 @@ function updatePlayerFromInput(dt) {
     playerMesh.position.x = BABYLON.Scalar.Clamp(playerMesh.position.x, -7.5, 7.5);
     playerMesh.position.z = BABYLON.Scalar.Clamp(playerMesh.position.z, -11.5, -0.5);
 }
+
 
