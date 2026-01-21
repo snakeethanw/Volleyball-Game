@@ -79,6 +79,7 @@ window.addEventListener("DOMContentLoaded", () => {
     game.canvas = canvas;
 
     // ✅ WebGL forced — prevents Babylon WebGPU crash
+    BABYLON.WebGPUEngine = null;
     engine = new BABYLON.Engine(canvas, true, {
         disableWebGPU: true
     });
@@ -422,3 +423,4 @@ function updatePlayerFromInput(dt) {
     playerMesh.position.x = BABYLON.Scalar.Clamp(playerMesh.position.x, -7.5, 7.5);
     playerMesh.position.z = BABYLON.Scalar.Clamp(playerMesh.position.z, -11.5, -0.5);
 }
+
