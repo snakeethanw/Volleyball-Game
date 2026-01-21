@@ -31,7 +31,7 @@ const inputState = {
 
 const game = {
     canvas: null,
-    engine: null,
+    : null,
     scene: null,
     camera: null,
 
@@ -78,9 +78,12 @@ window.addEventListener("DOMContentLoaded", () => {
     canvas = document.getElementById("gameCanvas");
     game.canvas = canvas;
 
-    engine = new BABYLON.Engine(canvas, true, {
+     = new BABYLON.(canvas, true, {
         disableWebGPU: true
     });
+
+    console.log("✅ Babylon engine initialized with WebGL");
+
     scene = new BABYLON.Scene(engine);
     game.engine = engine;
     game.scene = scene;
@@ -419,5 +422,6 @@ function updatePlayerFromInput(dt) {
     playerMesh.position.x = BABYLON.Scalar.Clamp(playerMesh.position.x, -7.5, 7.5);
     playerMesh.position.z = BABYLON.Scalar.Clamp(playerMesh.position.z, -11.5, -0.5);
 }
+
 
 
